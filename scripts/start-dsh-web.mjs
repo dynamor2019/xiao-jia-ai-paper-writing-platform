@@ -35,6 +35,7 @@ const childStderrLog = join(stateDir, 'web-child.stderr.log');
 const latestWebUrlPath = join(stateDir, 'latest-web-url.txt');
 const healthUrl = 'http://127.0.0.1:3080/';
 const fallbackBrowserUrl = `http://127.0.0.1:3080/?dsh_ui=${Date.now()}`;
+const shouldOpenBrowser = process.env.DSH_OPEN_BROWSER !== 'false' && process.env.XIAOJIA_DESKTOP !== '1';
 const healthIntervalMs = 30_000;
 const playwrightRoot = process.env.LOCALAPPDATA
   ? join(process.env.LOCALAPPDATA, 'ms-playwright')
@@ -171,7 +172,7 @@ function acquireSupervisorLock() {
       const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
       if (processIsAlive(lock.pid)) {
         logSupervisor(`检测到已有启动器 pid=${lock.pid}，本次退出。`);
-        openFreshBrowser();
+        if (shouldOpenBrowser) openFreshBrowser();
         process.exit(0);
       }
     } catch {
@@ -213,7 +214,7 @@ function runDsh() {
     if (tokenUrl) writeFileSync(latestWebUrlPath, `${tokenUrl}\n`, 'utf8');
     if (!openedBrowser && text.includes('dsh web:')) {
       openedBrowser = true;
-      openFreshBrowser();
+      if (shouldOpenBrowser) openFreshBrowser();
     }
   });
   child.stderr.on('data', (chunk) => {
@@ -292,7 +293,7 @@ acquireSupervisorLock();
 
 if (await isHealthy()) {
   logSupervisor('检测到已有健康服务，本次启动无需重复运行。');
-  openFreshBrowser();
+  if (shouldOpenBrowser) openFreshBrowser();
   process.exit(0);
 }
 

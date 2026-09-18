@@ -1,7 +1,10 @@
 .env
 .dsh-state/
 .playwright-mcp/
+%CD%/
+.npm-cache/
 dist/
+release/
 node_modules/
 output/
 papers/input/

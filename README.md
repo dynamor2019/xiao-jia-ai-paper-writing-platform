@@ -13,9 +13,9 @@
 1. 安装完整 Node.js LTS 20 或更高版本：<https://nodejs.org/>
 2. 双击根目录 `setup-dsh.bat`，自动安装依赖并准备 `%USERPROFILE%\Documents\XiaoJiaAI Data` 数据目录。
 3. 填写 `.env` 里的模型 API 配置，也可以启动后在项目设置里填写。
-4. 双击根目录 `一键启动小贾AI.bat`，启动小贾AI科研论文写作平台。
+4. 双击根目录 `桌面端启动小贾AI.bat`，以桌面窗口启动；也可以双击 `一键启动小贾AI.bat` 使用浏览器版。
 
-后续再次使用时，通常只需要双击 `一键启动小贾AI.bat`。普通用户不用运行任何 `.ps1` 文件。
+后续再次使用时，通常只需要双击 `桌面端启动小贾AI.bat`。普通用户不用运行任何 `.ps1` 文件。
 
 ## 架构
 
@@ -49,6 +49,8 @@ dsh/
 │   ├── start-dsh-web.mjs     # 同步运行时并启动 Web
 │   ├── sync-dsh-runtime.mjs  # 项目源码 → DSH 用户运行时
 │   └── md-to-docx.mjs        # Pandoc Word 导出与二次校验
+├── electron/
+│   └── main.cjs              # 桌面端主进程，自动承载本地 Web 服务
 ├── src/
 │   ├── index.ts              # 主入口，注册插件启动 dsh
 │   ├── types.ts              # 通用类型定义
@@ -190,13 +192,34 @@ Pandoc 是正式 Word 交付的必需依赖；导出失败时平台保留 Markdo
 
 ## 使用
 
-### 推荐方式：Web UI
+### 推荐方式：桌面端
+
+```bash
+npm run desktop
+```
+
+也可以直接双击根目录 `桌面端启动小贾AI.bat`。桌面端会自动启动本地 DSH 服务，并在独立窗口中打开小贾AI科研论文写作平台。
+
+### 浏览器版
 
 ```bash
 npm run web
 ```
 
-浏览器会自动全屏打开小贾AI科研论文写作平台。新会话默认使用论文研究 preset；旧会话保留创建时的 preset。使用“论文工作台”管理选题、文献、方案、实验、写作、校验、投稿和产物，或用 `/paper <宽泛研究领域>` 启动统一生命周期。
+也可以双击根目录 `一键启动小贾AI.bat`。浏览器会自动全屏打开平台。新会话默认使用论文研究 preset；旧会话保留创建时的 preset。使用“论文工作台”管理选题、文献、方案、实验、写作、校验、投稿和产物，或用 `/paper <宽泛研究领域>` 启动统一生命周期。
+
+### 打包 Windows 桌面端
+
+```bash
+scripts\package-desktop.bat
+```
+
+打包完成后，安装包会生成在 `release` 目录。也可以手动运行：
+
+```bash
+npm run build
+npm run desktop:pack
+```
 
 ### 恢复方式：命令行
 

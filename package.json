@@ -3,13 +3,16 @@
   "version": "0.1.0",
   "description": "小贾AI科研论文写作平台：面向科技论文研究、写作、校验、导出与投稿的一站式 DSH 工作台",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "electron/main.cjs",
   "scripts": {
     "build": "tsc",
     "setup": "node scripts/setup-dsh.mjs",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "web": "node scripts/start-dsh-web.mjs",
+    "desktop": "electron .",
+    "desktop:pack": "electron-builder --win portable --x64",
+    "desktop:dir": "electron-builder --dir --win --x64",
     "web:autostart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-dsh-autostart.ps1",
     "figures:install": "node scripts/install-figures4papers.mjs",
     "pylustrator:install": "node scripts/setup-dsh.mjs --pylustrator-only",
@@ -68,7 +71,44 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "electron": "^44.4.2",
+    "electron-builder": "^26.15.3",
     "tsx": "^4.16.0",
     "typescript": "^5.5.0"
+  },
+  "build": {
+    "appId": "com.xiaojia.ai.paper",
+    "productName": "小贾AI科研论文写作平台",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "scripts/**/*",
+      "config/**/*",
+      ".dsh/**/*",
+      "src/**/*",
+      "dist/**/*",
+      "knowledge-base/**/*",
+      "package.json",
+      "package-lock.json",
+      ".env.example",
+      "tsconfig.json",
+      "!release/**/*",
+      "!output/**/*",
+      "!papers/input/**/*",
+      "!.env"
+    ],
+    "asar": false,
+    "extraMetadata": {
+      "main": "electron/main.cjs"
+    },
+    "win": {
+      "target": "portable",
+      "icon": "config/dsh/assets/xiaojia-logo.png"
+    },
+    "portable": {
+      "artifactName": "小贾AI科研论文写作平台-${version}-Windows.exe"
+    }
   }
 }

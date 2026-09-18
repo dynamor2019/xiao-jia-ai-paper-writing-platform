@@ -51,6 +51,10 @@ function run(command, commandArgs, options = {}) {
     cwd: PROJECT_ROOT,
     env: {
       ...process.env,
+      NPM_CONFIG_REGISTRY: process.env.NPM_CONFIG_REGISTRY || 'https://registry.npmmirror.com',
+      npm_config_registry: process.env.npm_config_registry || process.env.NPM_CONFIG_REGISTRY || 'https://registry.npmmirror.com',
+      ELECTRON_MIRROR: process.env.ELECTRON_MIRROR || 'https://npmmirror.com/mirrors/electron/',
+      ELECTRON_BUILDER_BINARIES_MIRROR: process.env.ELECTRON_BUILDER_BINARIES_MIRROR || 'https://npmmirror.com/mirrors/electron-builder-binaries/',
       PAPER_DATA_ROOT: dataRoot,
       PAPER_STATE_DIR: '.dsh-state',
       PIP_CACHE_DIR: pipCacheRoot,
@@ -104,7 +108,12 @@ function ensureEnvFile() {
 }
 
 function ensureNodeDependencies() {
-  if (existsSync(join(PROJECT_ROOT, 'node_modules'))) {
+  const requiredModules = [
+    join(PROJECT_ROOT, 'node_modules', '@deepseek-ai', 'dsh'),
+    join(PROJECT_ROOT, 'node_modules', 'electron'),
+  ];
+  const missingModules = requiredModules.filter((modulePath) => !existsSync(modulePath));
+  if (existsSync(join(PROJECT_ROOT, 'node_modules')) && missingModules.length === 0) {
     log('Node 依赖已存在，跳过 npm install。');
     return;
   }
