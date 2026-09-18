@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveDataRoot } from './project-paths.mjs';
 
 const projectDir = process.cwd();
-const dataRoot = path.resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data');
+const dataRoot = resolveDataRoot();
 
 function assertInsideProject(targetPath) {
   const relative = path.relative(projectDir, targetPath);

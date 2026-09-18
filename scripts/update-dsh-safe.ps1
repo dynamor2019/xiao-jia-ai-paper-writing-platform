@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 
 $DataRoot = $env:PAPER_DATA_ROOT
 if (-not $DataRoot) {
-  $DataRoot = "F:\DSH data"
+  $DataRoot = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "XiaoJiaAI Data"
 }
 $NpmCacheRoot = Join-Path $DataRoot ".dsh-state\npm-cache"
 New-Item -ItemType Directory -Path $NpmCacheRoot -Force | Out-Null

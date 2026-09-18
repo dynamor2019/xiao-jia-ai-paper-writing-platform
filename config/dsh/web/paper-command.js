@@ -1,7 +1,7 @@
 /**
  * /paper 命令 - 基于文献 PDF 自动撰写论文
  * 用法:
- *   /paper <选题>                  # 自动读取 F:\DSH data\papers\input 目录下的 PDF
+ *   /paper <选题>                  # 自动读取数据目录 papers/input 下的 PDF
  *   /paper <选题> --file <路径>     # 指定单个文献文件
  *   /paper <选题> --dir <目录>      # 指定文献目录
  *   /paper <选题> --journal <期刊ID> # 按目标期刊要求写作
@@ -14,8 +14,8 @@ import { isAbsolute, join, basename, extname, relative, resolve } from 'node:pat
 const name = 'command-paper';
 const inject = ['commands', 'goals', 'webServer', 'systemPrompt'];
 
-const PROJECT_DIR = resolve(process.env.DSH_PAPER_PROJECT_DIR || 'F:\\dsh');
-const DATA_ROOT = resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data');
+const PROJECT_DIR = resolve(process.env.DSH_PAPER_PROJECT_DIR || String.raw`__DSH_PAPER_PROJECT_DIR__`);
+const DATA_ROOT = resolve(process.env.PAPER_DATA_ROOT || String.raw`__PAPER_DATA_ROOT__`);
 const INPUT_DIR = resolve(DATA_ROOT, process.env.PAPER_INPUT_DIR || 'papers/input');
 const OUTPUT_DIR = resolve(DATA_ROOT, process.env.OUTPUT_DIR || 'output');
 const STATE_ROOT = resolve(DATA_ROOT, process.env.PAPER_STATE_DIR || '.dsh-state');

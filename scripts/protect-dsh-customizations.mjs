@@ -5,9 +5,10 @@ import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promi
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveDataRoot } from './project-paths.mjs';
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DATA_ROOT = resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data');
+const DATA_ROOT = resolveDataRoot();
 const VAULT_ROOT = resolve(process.env.DSH_CUSTOMIZATION_VAULT || join(DATA_ROOT, '.dsh-state', 'protected-customizations'));
 const SNAPSHOT_ROOT = join(VAULT_ROOT, 'snapshot');
 const MANIFEST_PATH = join(VAULT_ROOT, 'manifest.json');

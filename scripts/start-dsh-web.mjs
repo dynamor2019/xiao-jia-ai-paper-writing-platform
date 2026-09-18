@@ -18,13 +18,14 @@ import { patchWorkbenchPylustrator } from './patch-dsh-workbench-pylustrator.mjs
 import { patchIncompatibleUiBundles } from './patch-dsh-incompatible-ui-bundles.mjs';
 import { patchDshBranding } from './patch-dsh-branding.mjs';
 import { syncDshRuntime } from './sync-dsh-runtime.mjs';
+import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
 
-const binPath = join(process.cwd(), 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
-const dataRoot = resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data');
+const binPath = join(PROJECT_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+const dataRoot = resolveDataRoot();
 const stateDir = resolve(dataRoot, process.env.PAPER_STATE_DIR || '.dsh-state');
 const tempDir = resolve(stateDir, 'tmp');
 const webWorkspace = resolve(process.env.DSH_WEB_WORKSPACE || join(dataRoot, 'output'));
-const npmPrefix = process.env.DSH_NPM_PREFIX || 'C:\\Users\\Administrator\\AppData\\Roaming\\npm';
+const npmPrefix = process.env.DSH_NPM_PREFIX || join(process.env.APPDATA || join(process.env.USERPROFILE || '', 'AppData', 'Roaming'), 'npm');
 const npmCache = process.env.DSH_NPM_CACHE || join(stateDir, 'npm-cache');
 const lockPath = join(stateDir, 'web-supervisor.lock.json');
 const cleanupStampPath = join(stateDir, 'last-cleanup.json');
@@ -55,7 +56,7 @@ const browserCandidates = [
 const univerRenderBrowser = process.env.UNIVER_RENDER_BROWSER
   || browserCandidates.find((candidate) => existsSync(candidate));
 const defaultBrowser = browserCandidates.find((candidate) => existsSync(candidate));
-const pylustratorHelper = resolve(process.env.DSH_PYLUSTRATOR_HELPER || join(process.cwd(), 'scripts', 'open_with_pylustrator.py'));
+const pylustratorHelper = resolve(process.env.DSH_PYLUSTRATOR_HELPER || join(PROJECT_ROOT, 'scripts', 'open_with_pylustrator.py'));
 const pylustratorPython = process.env.DSH_PYLUSTRATOR_PYTHON
   || (existsSync(join(stateDir, 'pylustrator-venv', 'Scripts', 'python.exe'))
     ? join(stateDir, 'pylustrator-venv', 'Scripts', 'python.exe')
@@ -89,7 +90,7 @@ function runPeriodicCleanup() {
     }
   }
   const cleanup = spawnSync(process.execPath, ['scripts/cleanup-dsh-data.mjs', '--apply'], {
-    cwd: process.cwd(),
+    cwd: PROJECT_ROOT,
     env: process.env,
     encoding: 'utf8',
   });
@@ -106,6 +107,8 @@ process.env.NPM_CONFIG_PREFIX = npmPrefix;
 process.env.NPM_CONFIG_CACHE = npmCache;
 process.env.NPM_CONFIG_GLOBALCONFIG = join(npmPrefix, 'etc', 'npmrc');
 process.env.NODE_PATH = join(npmPrefix, 'node_modules');
+process.env.DSH_PAPER_PROJECT_DIR = PROJECT_ROOT;
+process.env.PAPER_DATA_ROOT = dataRoot;
 
 const synced = await syncDshRuntime();
 console.log(`论文平台配置已同步（${synced.skills} 个 skills）。`);

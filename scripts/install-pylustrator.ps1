@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 
 $dataRoot = $env:PAPER_DATA_ROOT
 if (-not $dataRoot) {
-  $dataRoot = "F:\DSH data"
+  $dataRoot = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "XiaoJiaAI Data"
 }
 $pipCache = Join-Path $dataRoot ".dsh-state\pip-cache"
 $venvRoot = Join-Path $dataRoot ".dsh-state\pylustrator-venv"

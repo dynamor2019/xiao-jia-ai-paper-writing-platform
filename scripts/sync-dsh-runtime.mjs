@@ -1,16 +1,26 @@
-import { cp, mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
-const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
+
 const DSH_HOME = resolve(process.env.DSH_HOME || join(homedir(), '.dsh'));
 
 async function copyRuntimeFile(source, target) {
   if (!existsSync(source)) throw new Error(`运行时源码不存在: ${source}`);
   await mkdir(dirname(target), { recursive: true });
   await cp(source, target, { force: true, recursive: true });
+}
+
+async function copyRenderedRuntimeFile(source, target) {
+  await copyRuntimeFile(source, target);
+  const content = await readFile(target, 'utf8');
+  const rendered = content
+    .replaceAll('__DSH_PAPER_PROJECT_DIR__', PROJECT_ROOT)
+    .replaceAll('__PAPER_DATA_ROOT__', resolveDataRoot());
+  if (rendered !== content) await writeFile(target, rendered, 'utf8');
 }
 
 async function removeConflictingFlatSkill(targetRoot, skillName) {
@@ -36,13 +46,13 @@ export async function syncDshRuntime() {
   const profileSource = join(PROJECT_ROOT, 'config', 'dsh', 'web');
   const profileTarget = join(DSH_HOME, 'profiles', 'web');
   for (const file of ['paper-command.js', 'academic-search.js', 'research-memory.js', 'cordis.patch.yml']) {
-    await copyRuntimeFile(join(profileSource, file), join(profileTarget, file));
+    await copyRenderedRuntimeFile(join(profileSource, file), join(profileTarget, file));
   }
 
   const presetSource = join(PROJECT_ROOT, 'config', 'dsh', 'presets', 'paper');
   const presetTarget = join(DSH_HOME, '.agent-presets', 'paper');
   for (const file of ['agent.cordis.yml', 'preset.yml']) {
-    await copyRuntimeFile(join(presetSource, file), join(presetTarget, file));
+    await copyRenderedRuntimeFile(join(presetSource, file), join(presetTarget, file));
   }
 
   return { dshHome: DSH_HOME, skills: skills.length };

@@ -1,6 +1,6 @@
 param(
-  [string]$ProjectDir = "F:\dsh",
-  [string]$DataRoot = "F:\DSH data"
+  [string]$ProjectDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+  [string]$DataRoot = (Join-Path ([Environment]::GetFolderPath("MyDocuments")) "XiaoJiaAI Data")
 )
 
 $ErrorActionPreference = "Stop"

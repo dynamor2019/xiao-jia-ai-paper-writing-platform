@@ -16,14 +16,14 @@
 - id: sandbox-policy
   config:
     mode: danger-full-access
-    workspaceRoot: F:\dsh
+    workspaceRoot: __DSH_PAPER_PROJECT_DIR__
 
 # Windows 论文流水线不使用 ACL 受限令牌执行器，避免临时目录 ACL 失效阻塞长任务
 - id: pwsh-sandbox
   name: '@deepseek-ai/dsh-pwsh-local'
   disabled: !!js process.platform !== 'win32'
   config:
-    cwd: F:\dsh
+    cwd: __DSH_PAPER_PROJECT_DIR__
     timeoutMs: 120000
     maxTimeoutMs: 7200000
 

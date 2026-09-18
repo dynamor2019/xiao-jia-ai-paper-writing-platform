@@ -6,7 +6,7 @@ echo ========================================
 echo  小贾AI科研论文写作平台 初始化
 echo ========================================
 echo.
-echo 将检查完整 Node.js，并创建 F:\DSH data。
+echo 将检查完整 Node.js，并创建当前用户 Documents\XiaoJiaAI Data 数据目录。
 echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\setup-dsh.ps1"

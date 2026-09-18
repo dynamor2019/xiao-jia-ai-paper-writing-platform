@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if (-not $DataRoot) {
-  $DataRoot = "F:\DSH data"
+  $DataRoot = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "XiaoJiaAI Data"
 }
 
 $npmCacheRoot = Join-Path $DataRoot ".dsh-state\npm-cache"

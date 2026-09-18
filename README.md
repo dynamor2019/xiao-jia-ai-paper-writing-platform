@@ -5,7 +5,7 @@
 ## 下载后快速启动
 
 1. 安装完整 Node.js LTS 20 或更高版本：<https://nodejs.org/>
-2. 双击根目录 `setup-dsh.bat`，自动安装依赖并准备 `F:\DSH data` 数据目录。
+2. 双击根目录 `setup-dsh.bat`，自动安装依赖并准备 `%USERPROFILE%\Documents\XiaoJiaAI Data` 数据目录。
 3. 填写 `.env` 里的模型 API 配置。
 4. 双击根目录 `一键启动小贾AI.bat`，启动小贾AI科研论文写作平台。
 
@@ -74,7 +74,7 @@ dsh/
 运行数据放在仓库外：
 
 ```text
-F:\DSH data\
+%USERPROFILE%\Documents\XiaoJiaAI Data\
 ├── output/                   # 每个对话一篇论文的输出
 ├── papers/input/             # 本地原始文献与输入材料
 └── .dsh-state/               # 工作流状态（断点续跑）
@@ -85,7 +85,7 @@ F:\DSH data\
 ### 1. 克隆后先准备本机环境
 
 ```powershell
-cd F:\dsh
+cd <项目目录>
 npm run setup
 ```
 
@@ -94,7 +94,7 @@ npm run setup
 `npm run setup` 会自动创建外部数据目录：
 
 ```text
-F:\DSH data\
+%USERPROFILE%\Documents\XiaoJiaAI Data\
 ├── output\
 ├── output\papers\
 ├── papers\input\
@@ -144,7 +144,7 @@ ANTHROPIC_MODEL=claude-opus-5
 npm run sync:dsh
 ```
 
-正常使用 `npm run web` 时会自动执行同步，不需要手工维护 `C:\Users\Administrator\.dsh` 中的副本。
+正常使用 `npm run web` 时会自动执行同步，不需要手工维护 `%USERPROFILE%\.dsh` 中的副本。
 
 ### 5. 保护本地定制后再升级
 
@@ -215,7 +215,7 @@ npm run paper:cli -- "你的选题"
 npm run paper -- "你的选题"
 ```
 
-状态保存在 `F:\DSH data\.dsh-state` 和各论文目录内的 `.dsh-state/paper-pipeline-state.json`。
+状态保存在 `%USERPROFILE%\Documents\XiaoJiaAI Data\.dsh-state` 和各论文目录内的 `.dsh-state/paper-pipeline-state.json`。
 
 ## 定期清理
 
@@ -237,7 +237,7 @@ npm run cleanup:apply
 npm run cleanup:schedule
 ```
 
-清理器只处理低风险文件：日志、临时目录、npm 缓存、失败尝试、空目录和 `.dsh-state` 中的短期垃圾；默认不删除每篇论文的 `milestones/`、`final/`、`real_data/`、`raw/`、输入材料和定制保护快照。每次清理都会在 `F:\DSH data\.dsh-state\cleanup-reports\` 写入报告。
+清理器只处理低风险文件：日志、临时目录、npm 缓存、失败尝试、空目录和 `.dsh-state` 中的短期垃圾；默认不删除每篇论文的 `milestones/`、`final/`、`real_data/`、`raw/`、输入材料和定制保护快照。每次清理都会在 `%USERPROFILE%\Documents\XiaoJiaAI Data\.dsh-state\cleanup-reports\` 写入报告。
 
 ## 插件开发
 
@@ -266,7 +266,7 @@ export const myPlugin = {
 
 ## 注意事项
 
-1. **引用核验是生命线**：大模型会编造文献，务必查看 `F:\DSH data\output` 下对应论文目录中的引用核验报告，人工确认问题引用
+1. **引用核验是生命线**：大模型会编造文献，务必查看 `%USERPROFILE%\Documents\XiaoJiaAI Data\output` 下对应论文目录中的引用核验报告，人工确认问题引用
 2. **学术诚信**：AI 生成的内容需要你亲自审核、改写、确认，遵守所在机构的 AI 使用政策
 3. **dsh 预览版**：DeepSeek Harness 目前是开发者预览版，API 可能有破坏性更新，如遇兼容问题请查看官方仓库
 4. **API 费用**：长链路写作会消耗大量 token，建议设置用量上限
@@ -283,3 +283,4 @@ export const myPlugin = {
 ## License
 
 MIT
+

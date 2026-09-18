@@ -42,7 +42,7 @@ call npm run web
 if errorlevel 1 (
   echo.
   echo 启动失败，错误码：%errorlevel%
-  echo 请截图本窗口内容，或查看 F:\DSH data\.dsh-state\web-child.stderr.log
+  echo 请截图本窗口内容，或查看 "%USERPROFILE%\Documents\XiaoJiaAI Data\.dsh-state\web-child.stderr.log"
 )
 
 pause

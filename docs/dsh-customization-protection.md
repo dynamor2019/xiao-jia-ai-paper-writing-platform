@@ -13,7 +13,7 @@ npm run custom:protect
 保护快照保存在仓库外：
 
 ```text
-F:\DSH data\.dsh-state\protected-customizations\
+%USERPROFILE%\Documents\XiaoJiaAI Data\.dsh-state\protected-customizations\
 ```
 
 其中会包含 `.env`。这是为了保住你的中转站和模型路由配置，不会提交到 GitHub。
@@ -33,7 +33,7 @@ npm run custom:restore
 npm run sync:dsh
 ```
 
-恢复后会把项目内的论文 skills、preset 和 Web profile 重新同步到 `C:\Users\Administrator\.dsh`。
+恢复后会把项目内的论文 skills、preset 和 Web profile 重新同步到 `%USERPROFILE%\.dsh`。
 
 ## 安全升级 DSH
 
@@ -81,3 +81,4 @@ npm run web
 - `src/lib/model-client.ts` 的 OpenAI/Claude/中转站兼容
 - `src/workflows/paper-pipeline.ts` 的论文流水线
 - `src/plugins/**` 中的导出、研究和质量校验插件
+

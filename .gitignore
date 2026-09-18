@@ -9,4 +9,5 @@ temp/
 *.log
 __pycache__/
 *.pyc
+*.zip
 ~$*

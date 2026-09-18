@@ -14,8 +14,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 
 const name = 'tool-research-memory';
 const inject = ['tools'];
-const PROJECT_DIR = realpathSync(resolve(process.env.DSH_PAPER_PROJECT_DIR || 'F:\\dsh'));
-const DATA_ROOT_PATH = resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data');
+const PROJECT_DIR = realpathSync(resolve(process.env.DSH_PAPER_PROJECT_DIR || String.raw`__DSH_PAPER_PROJECT_DIR__`));
+const DATA_ROOT_PATH = resolve(process.env.PAPER_DATA_ROOT || String.raw`__PAPER_DATA_ROOT__`);
 mkdirSync(DATA_ROOT_PATH, { recursive: true });
 const DATA_ROOT = realpathSync(DATA_ROOT_PATH);
 const STATE_ROOT = resolve(DATA_ROOT, process.env.PAPER_STATE_DIR || '.dsh-state');
