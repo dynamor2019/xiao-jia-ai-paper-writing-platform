@@ -10,6 +10,12 @@
 
 ## 下载后快速启动
 
+### 方式一：直接下载桌面端 exe
+
+进入 GitHub 仓库的 **Actions** 或 **Releases** 页面，下载自动打包生成的 Windows 桌面端 exe，双击即可启动桌面窗口。
+
+### 方式二：克隆源码运行
+
 1. 安装完整 Node.js LTS 20 或更高版本：<https://nodejs.org/>
 2. 双击根目录 `setup-dsh.bat`，自动安装依赖并准备 `%USERPROFILE%\Documents\XiaoJiaAI Data` 数据目录。
 3. 填写 `.env` 里的模型 API 配置，也可以启动后在项目设置里填写。
@@ -209,6 +215,13 @@ npm run web
 也可以双击根目录 `一键启动小贾AI.bat`。浏览器会自动全屏打开平台。新会话默认使用论文研究 preset；旧会话保留创建时的 preset。使用“论文工作台”管理选题、文献、方案、实验、写作、校验、投稿和产物，或用 `/paper <宽泛研究领域>` 启动统一生命周期。
 
 ### 打包 Windows 桌面端
+
+GitHub 已配置自动打包：
+
+- 手动打包：进入 GitHub 仓库 `Actions` -> `Build Desktop` -> `Run workflow`
+- 正式发布：推送 `v0.1.0` 这类 tag，GitHub 会自动创建 Release 并上传 exe
+
+本地打包：
 
 ```bash
 scripts\package-desktop.bat
