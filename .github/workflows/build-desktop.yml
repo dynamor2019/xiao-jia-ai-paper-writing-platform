@@ -43,7 +43,7 @@ jobs:
       - name: Zip desktop app
         shell: pwsh
         run: |
-          $name = "小贾AI科研论文写作平台-${{ github.ref_name }}-Windows.zip"
+          $name = "XiaoJiaAI-Paper-Writing-Platform-${{ github.ref_name }}-Windows.zip"
           Compress-Archive -Path "release/win-unpacked/*" -DestinationPath "release/$name" -Force
 
       - name: Upload desktop artifact
