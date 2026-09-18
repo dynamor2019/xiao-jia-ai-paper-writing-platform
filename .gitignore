@@ -1,0 +1,12 @@
+.env
+.dsh-state/
+.playwright-mcp/
+dist/
+node_modules/
+output/
+papers/input/
+temp/
+*.log
+__pycache__/
+*.pyc
+~$*

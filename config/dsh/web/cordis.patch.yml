@@ -1,0 +1,57 @@
+# 用户 patch 层
+- insert:
+    - id: paper-command
+      name: ./paper-command.js
+    - id: academic-search
+      name: ./academic-search.js
+    - id: research-memory
+      name: ./research-memory.js
+
+# 新会话默认使用论文专用 preset；旧会话保留创建时的 preset。
+- id: agent-presets
+  config:
+    default: paper
+
+# 沙箱策略设为最宽
+- id: sandbox-policy
+  config:
+    mode: danger-full-access
+    workspaceRoot: F:\dsh
+
+# Windows 论文流水线不使用 ACL 受限令牌执行器，避免临时目录 ACL 失效阻塞长任务
+- id: pwsh-sandbox
+  name: '@deepseek-ai/dsh-pwsh-local'
+  disabled: !!js process.platform !== 'win32'
+  config:
+    cwd: F:\dsh
+    timeoutMs: 120000
+    maxTimeoutMs: 7200000
+
+# 审批策略设为 never，避免频繁弹窗
+- id: approval
+  config:
+    policy: never
+
+# 默认模型改为 OpenAI 中转模型，避免回落到 DeepSeek 默认模型。
+- id: agent-default-model
+  config:
+    provider: rayinai
+    model: gpt-5.6-terra
+
+# 使用无需 DeepSeek 原生协议的 OpenAlex 学术搜索。
+- id: web
+  config:
+    searchProvider: openalex
+
+# 启用联网工具，由 OpenAlex provider 提供可核验的论文搜索结果。
+- id: tool-web
+  disabled: false
+
+# 防止 DeepSeek 搜索 provider 继续拿 Claude/OpenAI 配置发错协议请求。
+- id: web-search-deepseek
+  disabled: true
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+    baseURL: https://api.deepseek.com/anthropic/v1
+    model: deepseek-v4-flash
+    maxUses: 5
