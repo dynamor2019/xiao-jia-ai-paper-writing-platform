@@ -1,6 +1,6 @@
 {
   "name": "xiao-jia-ai-paper-writing-platform",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "小贾AI科研论文写作平台：面向科技论文研究、写作、校验、导出与投稿的一站式 DSH 工作台",
   "type": "module",
   "main": "electron/main.cjs",
@@ -100,12 +100,14 @@
       "!.env"
     ],
     "asar": false,
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false,
     "extraMetadata": {
       "main": "electron/main.cjs"
     },
     "win": {
       "target": "portable",
-      "icon": "config/dsh/assets/xiaojia-logo.png"
+      "icon": "config/dsh/assets/xiaojia-desktop-icon.png"
     },
     "portable": {
       "artifactName": "小贾AI科研论文写作平台-${version}-Windows.exe"
