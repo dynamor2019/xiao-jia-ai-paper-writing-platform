@@ -22,6 +22,11 @@ python -c "import numpy, pandas, scipy, matplotlib; print('  numpy=' + numpy.__v
 
 echo.
 echo 启动 dsh web...
-npm run web
+call npm run web
+if errorlevel 1 (
+  echo.
+  echo 启动失败，错误码：%errorlevel%
+  echo 请截图本窗口内容，或查看 F:\DSH data\.dsh-state\web-child.stderr.log
+)
 
 pause
