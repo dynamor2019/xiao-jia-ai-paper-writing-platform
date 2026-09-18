@@ -4,7 +4,7 @@ $ErrorActionPreference = "Continue"
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectDir
 
-& powershell -NoProfile -ExecutionPolicy Bypass -File "scripts/setup-dsh.ps1"
+& node "scripts/setup-dsh.mjs"
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

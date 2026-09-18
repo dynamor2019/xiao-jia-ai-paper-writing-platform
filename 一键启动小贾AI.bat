@@ -29,7 +29,7 @@ if errorlevel 1 (
 
 if not exist "node_modules" (
   echo 未找到 node_modules，正在先执行 setup-dsh.bat 同等安装流程...
-  powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\setup-dsh.ps1"
+  call node "scripts\setup-dsh.mjs"
   if errorlevel 1 (
     echo 安装失败。
     pause

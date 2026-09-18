@@ -6,10 +6,12 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
 
+import { resolveDataRoot } from './project-paths.mjs';
+
 const execFileAsync = promisify(execFile);
 const REPO_URL = 'https://github.com/ChenLiu-1996/figures4papers.git';
 
-const dataRoot = resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data');
+const dataRoot = resolveDataRoot();
 const resourceRoot = resolve(process.env.DSH_RESOURCE_ROOT || join(dataRoot, 'resources'));
 const targetDir = resolve(process.env.FIGURES4PAPERS_HOME || join(resourceRoot, 'figures4papers'));
 

@@ -18,6 +18,7 @@ const PROTECTED_PATHS = [
   '.env.example',
   'README.md',
   'package.json',
+  'scripts/setup-dsh.mjs',
   'scripts/setup-dsh.ps1',
   'scripts/start-dsh-web.mjs',
   'scripts/sync-dsh-runtime.mjs',

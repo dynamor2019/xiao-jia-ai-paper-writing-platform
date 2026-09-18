@@ -7,7 +7,15 @@ echo ========================================
 cd /d "%~dp0"
 
 echo 检查 Node 并准备当前用户 Documents\XiaoJiaAI Data...
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\setup-dsh.ps1"
+where node >nul 2>nul
+if errorlevel 1 (
+  echo 未检测到 Node.js。
+  echo 请先安装完整 Node.js LTS: https://nodejs.org/
+  pause
+  exit /b 1
+)
+
+call node "scripts\setup-dsh.mjs"
 if errorlevel 1 (
   pause
   exit /b 1
