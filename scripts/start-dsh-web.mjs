@@ -16,6 +16,7 @@ import { patchWorkbenchDocxPreview } from './patch-dsh-workbench-docx-preview.mj
 import { patchWorkbenchFloating } from './patch-dsh-workbench-floating.mjs';
 import { patchWorkbenchPylustrator } from './patch-dsh-workbench-pylustrator.mjs';
 import { patchIncompatibleUiBundles } from './patch-dsh-incompatible-ui-bundles.mjs';
+import { patchDshBranding } from './patch-dsh-branding.mjs';
 import { syncDshRuntime } from './sync-dsh-runtime.mjs';
 
 const binPath = join(process.cwd(), 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
@@ -115,6 +116,7 @@ const patchedUniver = runStartupPatch('Univer 执行参数补丁', patchUniverEx
 console.log(`Univer 执行参数补丁已检查（更新 ${patchedUniver} 个运行时）。`);
 console.log(`全家桶轻量兼容补丁已检查（${runStartupPatch('全家桶轻量兼容补丁', patchWebAllLite) ? '已更新' : '无需更新'}）。`);
 console.log(`不兼容 UI 插件禁用补丁已检查（${runStartupPatch('不兼容 UI 插件禁用补丁', patchIncompatibleUiBundles) ? '已更新' : '无需更新'}）。`);
+console.log(`小贾AI 品牌补丁已检查（${runStartupPatch('小贾AI 品牌补丁', patchDshBranding) ? '已更新' : '无需更新'}）。`);
 console.log(`文件工作台右上角入口补丁已检查（${runStartupPatch('文件工作台右上角入口补丁', patchWorkbenchFloating) ? '已更新' : '无需更新'}）。`);
 console.log(`文件工作台 Word 预览补丁已检查（更新 ${runStartupPatch('文件工作台 Word 预览补丁', patchWorkbenchDocxPreview)} 个文件）。`);
 console.log(`文件工作台 Pylustrator 入口补丁已检查（更新 ${runStartupPatch('文件工作台 Pylustrator 入口补丁', patchWorkbenchPylustrator)} 个文件）。`);

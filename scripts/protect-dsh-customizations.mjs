@@ -37,6 +37,7 @@ const PROTECTED_PATHS = [
   'scripts/patch-dsh-todo-status.mjs',
   'scripts/patch-dsh-univer-execute.mjs',
   'scripts/patch-dsh-web-all-lite.mjs',
+  'scripts/patch-dsh-branding.mjs',
   'scripts/patch-dsh-workbench-docx-preview.mjs',
   'scripts/patch-dsh-workbench-floating.mjs',
   'scripts/patch-dsh-workbench-pylustrator.mjs',
