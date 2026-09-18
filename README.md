@@ -2,11 +2,17 @@
 
 > 从联网选题、文献证据、研究设计、程序实验和数据验收到逐段写作、独立校验、投稿返修与发表归档的一站式桌面平台。
 
+## 项目初衷
+
+很多中文用户在直接使用 OpenAI 或 Claude 时，会遇到账号风控、封号或访问不稳定的问题；更痛的是，辛苦打磨出来的长对话、研究过程和写作上下文可能瞬间消失。小贾AI科研论文写作平台的初衷，就是把论文写作过程尽量留在本地，把模型调用接入到更稳定的中转站方案里，降低账号不可用带来的损失。
+
+本项目默认面向 OpenAI-compatible 与 Anthropic-compatible 的中转接口，方便调用主流闭源大模型，同时保留本地项目文件、论文材料、输出结果和断点状态，避免把关键研究过程只放在单一网页账号里。
+
 ## 下载后快速启动
 
 1. 安装完整 Node.js LTS 20 或更高版本：<https://nodejs.org/>
 2. 双击根目录 `setup-dsh.bat`，自动安装依赖并准备 `%USERPROFILE%\Documents\XiaoJiaAI Data` 数据目录。
-3. 填写 `.env` 里的模型 API 配置。
+3. 填写 `.env` 里的模型 API 配置，也可以启动后在项目设置里填写。
 4. 双击根目录 `一键启动小贾AI.bat`，启动小贾AI科研论文写作平台。
 
 后续再次使用时，通常只需要双击 `一键启动小贾AI.bat`。普通用户不用运行任何 `.ps1` 文件。
@@ -126,7 +132,7 @@ npm install
 copy .env.example .env
 ```
 
-编辑 `.env`，填入 OpenAI 与 Claude 中转接口配置：
+推荐先编辑 `.env`，填入 OpenAI 与 Claude 中转接口配置：
 
 ```env
 OPENAI_API_KEY=sk-xxxxxxxxxxxx
@@ -137,7 +143,9 @@ ANTHROPIC_BASE_URL=https://your-anthropic-compatible-endpoint
 ANTHROPIC_MODEL=claude-opus-5
 ```
 
-> 正文流水线仅使用 OpenAI 与 Claude 路由；Web 搜索使用 OpenAlex，不再调用 DeepSeek provider。
+也可以启动后在项目设置里填写 API Key 和接口地址；这种方式更直观，但需要用户理解不同服务商的 API Key、Base URL、模型名和路由设置。为降低配置门槛，本项目按中转站调用习惯整理了 OpenAI-compatible 与 Anthropic-compatible 配置，方便接入 GPT、Claude 等主流闭源大模型。
+
+> 正文流水线仅使用 OpenAI 与 Claude 路由；Web 搜索使用 OpenAlex，不再调用 DeepSeek provider。请妥善保管 API Key，不要把填写了真实 Key 的 `.env` 上传到 GitHub。
 
 ### 4. 同步并检查 DSH 运行时
 
