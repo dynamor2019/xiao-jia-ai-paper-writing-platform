@@ -12,7 +12,7 @@
 
 ### 方式一：直接下载桌面端 exe
 
-进入 GitHub 仓库的 **Actions** 或 **Releases** 页面，下载自动打包生成的 Windows 桌面端 exe，双击即可启动桌面窗口。
+进入 GitHub 仓库的 **Actions** 或 **Releases** 页面，下载自动打包生成的 Windows 桌面端 zip，解压后双击里面的 `小贾AI科研论文写作平台.exe` 即可启动桌面窗口。
 
 ### 方式二：克隆源码运行
 
@@ -219,7 +219,7 @@ npm run web
 GitHub 已配置自动打包：
 
 - 手动打包：进入 GitHub 仓库 `Actions` -> `Build Desktop` -> `Run workflow`
-- 正式发布：推送 `v0.1.0` 这类 tag，GitHub 会自动创建 Release 并上传 exe
+- 正式发布：推送 `v0.1.0` 这类 tag，GitHub 会自动创建 Release 并上传 Windows 桌面端 zip
 
 本地打包：
 

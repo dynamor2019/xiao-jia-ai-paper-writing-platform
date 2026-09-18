@@ -1,6 +1,6 @@
 {
   "name": "xiao-jia-ai-paper-writing-platform",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "小贾AI科研论文写作平台：面向科技论文研究、写作、校验、导出与投稿的一站式 DSH 工作台",
   "type": "module",
   "main": "electron/main.cjs",
@@ -12,6 +12,7 @@
     "web": "node scripts/start-dsh-web.mjs",
     "desktop": "electron .",
     "desktop:pack": "electron-builder --win portable --x64",
+    "desktop:pack:github": "electron-builder --dir --win --x64",
     "desktop:dir": "electron-builder --dir --win --x64",
     "web:autostart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-dsh-autostart.ps1",
     "figures:install": "node scripts/install-figures4papers.mjs",

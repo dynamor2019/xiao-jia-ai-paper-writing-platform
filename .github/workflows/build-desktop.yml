@@ -38,18 +38,24 @@ jobs:
         run: npm run build
 
       - name: Package desktop app
-        run: npm run desktop:pack
+        run: npm run desktop:pack:github
+
+      - name: Zip desktop app
+        shell: pwsh
+        run: |
+          $name = "小贾AI科研论文写作平台-${{ github.ref_name }}-Windows.zip"
+          Compress-Archive -Path "release/win-unpacked/*" -DestinationPath "release/$name" -Force
 
       - name: Upload desktop artifact
         uses: actions/upload-artifact@v4
         with:
           name: xiao-jia-ai-paper-writing-platform-windows
-          path: release/*.exe
+          path: release/*.zip
           if-no-files-found: error
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: release/*.exe
+          files: release/*.zip
           generate_release_notes: true
