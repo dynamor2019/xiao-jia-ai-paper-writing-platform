@@ -533,7 +533,7 @@ function defaultMinOutputChars(task: TaskType | undefined): number {
 
 function useClaudeOpenAICompatibility(baseUrl: string): boolean {
   const configured = process.env.ANTHROPIC_API_MODE?.trim().toLowerCase();
-  if (configured) return configured === 'openai-completions';
+  if (configured) return configured === 'openai-completions' || configured === 'openai';
   return /code\.rayinai\.com/i.test(baseUrl);
 }
 

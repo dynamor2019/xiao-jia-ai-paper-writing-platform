@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { resolvePaperModelEnv } from './paper-model-env.mjs';
+
 const MAX_RECOVERIES = Number(process.env.PAPER_BACKGROUND_MAX_RECOVERIES || 72);
 const RETRY_BASE_MS = Number(process.env.PAPER_BACKGROUND_RETRY_BASE_MS || 60_000);
 const RETRY_MAX_MS = Number(process.env.PAPER_BACKGROUND_RETRY_MAX_MS || 900_000);
@@ -67,7 +69,7 @@ async function runPipelineUntilSettled() {
 
     const child = spawn(process.execPath, request.pipelineArgs, {
       cwd: request.projectDir,
-      env: process.env,
+      env: resolvePaperModelEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -81,13 +83,10 @@ async function runPipelineUntilSettled() {
         recentOutput += text;
         if (recentOutput.length > 24_000) recentOutput = recentOutput.slice(-24_000);
         appendLog(request.runLogPath, text);
-        const matches = [...text.matchAll(/\[阶段\s+\d+\/\d+\]\s+([^\r\n]+)/g)];
-        if (matches.length > 0) {
-          state.stage = matches.at(-1)[1].trim();
-        }
-        const indexMatches = [...text.matchAll(/\[阶段\s+(\d+)\/(\d+)\]\s+([^\r\n]+)/g)];
+        const indexMatches = [...recentOutput.matchAll(/\[阶段\s+(\d+)\/(\d+)\]\s+([^\r\n]+)/g)];
         if (indexMatches.length > 0) {
           const match = indexMatches.at(-1);
+          state.stage = match[3].trim();
           state.stageIndex = Number(match[1]);
           state.stageTotal = Number(match[2]);
         }

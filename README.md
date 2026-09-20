@@ -153,6 +153,8 @@ ANTHROPIC_MODEL=claude-opus-5
 
 也可以启动后在项目设置里填写 API Key 和接口地址；这种方式更直观，但需要用户理解不同服务商的 API Key、Base URL、模型名和路由设置。为降低配置门槛，本项目按中转站调用习惯整理了 OpenAI-compatible 与 Anthropic-compatible 配置，方便接入 GPT、Claude 等主流闭源大模型。
 
+论文流水线启动时会读取 Web「模型」设置中的 `rayinai`、`rayinai-claude` 凭据与接口地址；若 `.env` 已填写对应 API Key，则优先使用 `.env`。各写作阶段的模型仍由 `.env` 中的 `ROUTE_*` 配置控制，实际路由见运行日志。
+
 > 正文流水线仅使用 OpenAI 与 Claude 路由；Web 搜索使用 OpenAlex，不再调用 DeepSeek provider。请妥善保管 API Key，不要把填写了真实 Key 的 `.env` 上传到 GitHub。
 
 ### 4. 同步并检查 DSH 运行时
@@ -240,7 +242,7 @@ npm run desktop:pack
 npm run paper:cli -- "基于深度学习的建筑结构健康监测研究"
 ```
 
-CLI 与 Web 的 `/paper` 调用同一条核心流水线和同一套模型路由，但仅用于排障、自动化或 Web 不可用时恢复任务。
+CLI 与 Web 的 `/paper` 调用同一条核心流水线和同一套模型路由。CLI 启动时会打印论文项目 ID；需要在 Web 工作台查看或接续时，新建对话并输入 `/paper-attach <论文项目ID>`。
 
 ### 方式三：开发模式
 
@@ -250,14 +252,14 @@ npm run dev
 
 ## 断点续跑
 
-如果工作流中断（网络错误、手动停止等），重新运行相同选题的命令会自动从上次中断的阶段继续：
+如果 CLI 工作流中断（网络错误、手动停止等），使用首次运行打印的论文项目 ID 从原目录继续：
 
 ```bash
 # 第一次运行，在"大纲生成"阶段断了
 npm run paper:cli -- "你的选题"
 
-# 再次运行，自动从"大纲生成"继续
-npm run paper -- "你的选题"
+# 再次运行，替换成首次运行打印的项目 ID
+npm run paper:cli -- "你的选题" --project-id paper-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
 状态保存在 `%USERPROFILE%\Documents\XiaoJiaAI Data\.dsh-state` 和各论文目录内的 `.dsh-state/paper-pipeline-state.json`。

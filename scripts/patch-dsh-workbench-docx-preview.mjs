@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const WORKBENCH_ROOT = resolve(
-  process.env.DSH_HOME || 'C:\\Users\\Administrator\\.dsh',
+  process.env.DSH_HOME || join(homedir(), '.dsh'),
   'profiles',
   'web',
   'node_modules',

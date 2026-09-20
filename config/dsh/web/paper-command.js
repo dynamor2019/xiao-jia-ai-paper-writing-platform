@@ -28,16 +28,6 @@ const CLEANUP_SCRIPT = join(PROJECT_DIR, 'scripts', 'cleanup-dsh-data.mjs');
 const PANDOC_BIN = process.env.PANDOC_PATH || 'pandoc';
 const SUPPORTED_EXTS = new Set(['.pdf', '.docx', '.txt', '.md']);
 const PAPER_INPUT_HINT = '<研究领域或题目> [--focus <核心贡献>] [--scope <范围边界>] [--method <方法偏好>] [--constraints <数据约束>] [--journal <期刊ID>]';
-const DEFAULT_MODELS = {
-  DISCOVERY: 'openai/gpt-5.6-sol',
-  PROTOCOL: 'rayinai-claude/claude-opus-5',
-  SUMMARY: 'openai/gpt-5.6-luna',
-  OUTLINE: 'openai/gpt-5.6-terra',
-  WRITING: 'openai/gpt-5.6-terra',
-  COHERENCE: 'openai/gpt-5.6-luna',
-  CITATION: 'openai/gpt-5.6-terra',
-  POLISH: 'openai/gpt-5.6-luna',
-};
 const JOURNALS = {
   'automation-in-construction': 'Automation in Construction',
   'advanced-engineering-informatics': 'Advanced Engineering Informatics',
@@ -204,7 +194,7 @@ async function ensureDir(dir) {
 }
 
 async function countDocs(dir) {
-  if (!existsSync(dir)) return 0;
+  if (!dir || !existsSync(dir)) return 0;
   const files = await readdir(dir);
   return files.filter((f) => SUPPORTED_EXTS.has(extname(f).toLowerCase())).length;
 }
@@ -233,8 +223,26 @@ function runLogPath(agent) {
   return join(RUNS_DIR, `${sessionKey(agent)}.log`);
 }
 
-function createConversationProjectDir(agent, topic) {
+function createConversationProjectDir(agent) {
   return join(OUTPUT_DIR, 'paper-projects', paperProjectId(agent));
+}
+
+function activeProjectId(agent) {
+  return readRunState(agent)?.paperProjectId || paperProjectId(agent);
+}
+
+async function prepareProjectInput(outputDir, filePath, dirPath) {
+  const sourceDir = dirPath || INPUT_DIR;
+  const sourceFiles = filePath ? [filePath] : existsSync(sourceDir)
+    ? (await readdir(sourceDir, { withFileTypes: true })).filter((entry) => entry.isFile() && SUPPORTED_EXTS.has(extname(entry.name).toLowerCase())).map((entry) => join(sourceDir, entry.name))
+    : [];
+  const inputDir = join(outputDir, 'input');
+  if (sourceFiles.length > 0) await ensureDir(inputDir);
+  for (const source of sourceFiles) {
+    const dest = join(inputDir, basename(source));
+    if (resolve(source) !== resolve(dest)) await copyFile(source, dest);
+  }
+  return await countDocs(inputDir) > 0 ? inputDir : undefined;
 }
 
 function activePaperDir(agent) {
@@ -381,7 +389,7 @@ function createFileIfMissing(path, content) {
 }
 
 async function initializeResearchWorkspace(topic, journalId, agent) {
-  const outputDir = activePaperDir(agent) || createConversationProjectDir(agent, topic);
+  const outputDir = activePaperDir(agent) || createConversationProjectDir(agent);
   const milestoneDir = join(outputDir, 'milestones');
   await ensureDir(milestoneDir);
   await ensureDir(join(outputDir, '.dsh-state'));
@@ -400,7 +408,7 @@ async function initializeResearchWorkspace(topic, journalId, agent) {
   for (const [file, content] of Object.entries(templates)) {
     if (createFileIfMissing(join(milestoneDir, file), content)) created.push(file);
   }
-  writeFileSync(join(outputDir, '.dsh-state', 'research-workspace.json'), JSON.stringify({ topic, journalId, journalName, outputDir, paperProjectId: paperProjectId(agent), updatedAt: new Date().toISOString() }, null, 2), 'utf8');
+  writeFileSync(join(outputDir, '.dsh-state', 'research-workspace.json'), JSON.stringify({ topic, journalId, journalName, outputDir, paperProjectId: activeProjectId(agent), updatedAt: new Date().toISOString() }, null, 2), 'utf8');
   const current = readRunState(agent);
   saveRunState(agent, { ...current, topic, journalId, journalName, outputDir, status: current?.status || 'initialized' });
   return { created, journalName, outputDir };
@@ -441,13 +449,6 @@ function normalizePaperTopic(input) {
   const scope = scopeMatch?.[1]?.trim();
   if (!scope || title.includes(scope)) return title;
   return `${title}; scope: ${scope}`;
-}
-
-function routeLabel(task) {
-  const provider = process.env[`ROUTE_${task}_PROVIDER`] || DEFAULT_MODELS[task].split('/')[0];
-  const model = process.env[`ROUTE_${task}_MODEL`] || DEFAULT_MODELS[task].split('/')[1];
-  const dshProvider = provider === 'openai' ? 'rayinai' : provider === 'claude' ? 'rayinai-claude' : provider;
-  return `${dshProvider}/${model}`;
 }
 
 function readRunState(agent) {
@@ -527,7 +528,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
   if (researchDirection.constraints) pipelineArgs.push('--constraints', researchDirection.constraints);
   pipelineArgs.push('--approval-mode', approvalMode);
   pipelineArgs.push('--output-dir', outputDir);
-  pipelineArgs.push('--project-id', paperProjectId(agent));
+  pipelineArgs.push('--project-id', activeProjectId(agent));
   const requestPath = join(RUNS_DIR, `${sessionKey(agent)}-${Date.now()}.request.json`);
   writeFileSync(requestPath, JSON.stringify({
     projectDir: PROJECT_DIR,
@@ -545,7 +546,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
       researchDirection,
       approvalMode,
       outputDir,
-      paperProjectId: paperProjectId(agent),
+      paperProjectId: activeProjectId(agent),
       status: 'running',
       stage: 'starting',
       startedAt: new Date().toISOString(),
@@ -560,7 +561,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
     windowsHide: true,
   });
   child.unref();
-  const state = { topic, inputDir, journalId, journalName: journalId ? JOURNALS[journalId] : undefined, experimentCommand, resultsFile, researchDirection, approvalMode, outputDir, paperProjectId: paperProjectId(agent), status: 'running', stage: 'starting', pid: child.pid, startedAt: new Date().toISOString(), logPath };
+  const state = { topic, inputDir, journalId, journalName: journalId ? JOURNALS[journalId] : undefined, experimentCommand, resultsFile, researchDirection, approvalMode, outputDir, paperProjectId: activeProjectId(agent), status: 'running', stage: 'starting', pid: child.pid, startedAt: new Date().toISOString(), logPath };
   saveRunState(agent, state);
   return state;
 }
@@ -634,7 +635,7 @@ async function workbenchSnapshot(agent) {
       stage: 'project-intake',
       stages: WORKBENCH_STAGE_LABELS.map(([id, label]) => ({ id, label, passed: false, status: 'pending' })),
       progress: { completed: 0, total: WORKBENCH_STAGE_LABELS.length, percent: 0 },
-      inputCount: await countDocs(INPUT_DIR),
+      inputCount: 0,
       deliverableCount: 0,
       quality: '未运行',
     };
@@ -649,14 +650,17 @@ async function workbenchSnapshot(agent) {
   const reports = artifacts.filter((row) => /(quality-report|scientific-review|citation-verification)/i.test(row.file));
   const deliverables = artifacts.filter((row) => /\.(md|docx|tex|bib)$/i.test(row.file) && !reports.includes(row));
   const latestReport = reports[0];
-  const reportText = latestReport ? readFileSync(latestReport.path, 'utf8') : '';
-  const quality = !latestReport ? '未运行' : /\bBLOCKED\b|Verdict:\s*(?:major revision|reject)/i.test(reportText) ? 'BLOCKED' : /\bPASS\b|Verdict:\s*pass/i.test(reportText) ? 'PASS' : '需复核';
+  const qualityReports = reports.filter((row) => /(paper-quality-report|docx-quality-report|final-scientific-review)/i.test(row.file));
+  const qualityTexts = qualityReports.map((row) => readFileSync(row.path, 'utf8'));
+  const quality = qualityTexts.length === 0 ? '未运行'
+    : qualityTexts.some((value) => /\bBLOCKED\b|Verdict:\s*(?:major revision|reject)/i.test(value)) ? 'BLOCKED'
+      : qualityReports.some((row, index) => /paper-quality-report/i.test(row.file) && /\bPASS\b|Verdict:\s*pass/i.test(qualityTexts[index])) ? 'PASS' : '需复核';
   const manuscript = deliverables.find((row) => isManuscriptMarkdown(row.file));
   const word = deliverables.find((row) => row.file.toLowerCase().endsWith('.docx') && !row.file.startsWith('~$'));
   const workspace = readWorkspaceState(agent);
   const pipeline = readPipelineState(baseDir);
   const runStatus = running ? 'running' : state.status;
-  const pipelineStage = pipeline?.stage || state.stage || 'project-intake';
+  const pipelineStage = WORKBENCH_STAGE_LABELS.some(([id]) => id === state.stage) ? state.stage : pipeline?.stage || 'project-intake';
   const currentIndex = Math.max(0, WORKBENCH_STAGE_LABELS.findIndex(([id]) => id === pipelineStage));
   const stages = WORKBENCH_STAGE_LABELS.map(([id, label], index) => {
     let status = index < currentIndex ? 'complete' : 'pending';
@@ -678,12 +682,12 @@ async function workbenchSnapshot(agent) {
     outputDir: baseDir,
     paperProjectId: workspace?.paperProjectId || pipeline?.metadata?.paperProjectId || state.paperProjectId || paperProjectId(agent),
     runStatus,
-    stage: pipelineStage,
+    stage: state.stage || pipelineStage,
     nextRetryAt: state.nextRetryAt,
     recoveryCount: state.recoveryCount,
     stages,
     progress: { completed, total: stages.length, percent: Math.round((completed / stages.length) * 100) },
-    inputCount: await countDocs(INPUT_DIR),
+    inputCount: await countDocs(state.inputDir || join(baseDir, 'input')),
     deliverableCount: deliverables.length,
     quality,
     latestReport: latestReport?.path,
@@ -757,6 +761,34 @@ function apply(ctx) {
       }
       const result = await initializeResearchWorkspace(topic, journalId, invocation.agent);
       return { kind: 'success', text: [`论文项目已建立: ${topic}`, `目标期刊: ${result.journalName}`, `新建台账: ${result.created.length ? result.created.join(', ') : '已有文件均已保留，未覆盖'}`, `本对话论文目录: ${result.outputDir}`, '', '下一步先完善 research-brief.md 与 analysis-plan.md，再进入证据综合和逐段写作。'].join('\n') };
+    },
+  });
+
+  ctx.commands.register({
+    name: 'paper-attach',
+    description: '将 CLI 创建的论文项目接入当前对话工作台',
+    input: { hint: '<论文项目ID>', images: false },
+    handler: async (invocation) => {
+      const projectId = invocation.rawInput?.trim() || '';
+      if (!/^paper-[a-zA-Z0-9_-]+$/.test(projectId)) return { kind: 'error', text: '请填写有效的论文项目 ID。' };
+      if (readRunState(invocation.agent)?.outputDir) return { kind: 'error', text: '当前对话已绑定论文项目，请新建对话后再接入。' };
+      const outputDir = join(OUTPUT_DIR, 'paper-projects', projectId);
+      const checkpoint = readPipelineState(outputDir);
+      if (!checkpoint?.topic) return { kind: 'error', text: '未找到该项目的流水线检查点。' };
+      const awaiting = checkpoint.metadata?.awaitingApproval === 'topic-confirmation';
+      saveRunState(invocation.agent, {
+        topic: checkpoint.metadata?.originalTopic || checkpoint.topic,
+        journalId: checkpoint.metadata?.targetJournalId,
+        researchDirection: checkpoint.metadata?.researchDirection || {},
+        inputDir: checkpoint.metadata?.inputDir || (existsSync(join(outputDir, 'input')) ? join(outputDir, 'input') : undefined),
+        outputDir,
+        paperProjectId: projectId,
+        status: awaiting ? 'awaiting-confirmation' : existsSync(join(outputDir, 'milestones', 'submission-manifest.md')) && /READY FOR AUTHOR CONFIRMATION/.test(readFileSync(join(outputDir, 'milestones', 'submission-manifest.md'), 'utf8')) ? 'completed' : 'failed',
+        stage: checkpoint.stage,
+        startedAt: checkpoint.createdAt || new Date().toISOString(),
+        logPath: runLogPath(invocation.agent),
+      });
+      return { kind: 'success', text: `已接入论文项目 ${projectId}。使用 /paper-workbench 查看状态；需要继续时使用 /paper-resume。` };
     },
   });
 
@@ -953,7 +985,6 @@ function apply(ctx) {
       }
 
       try {
-        await ensureDir(INPUT_DIR);
         await ensureDir(OUTPUT_DIR);
         await ensureDir(STATE_ROOT);
 
@@ -965,9 +996,7 @@ function apply(ctx) {
           return { kind: 'error', text: `一个对话只对应一篇论文。本对话已绑定“${currentRun.topic}”，请新建对话后再开始新论文。` };
         }
 
-        let useDir = INPUT_DIR;
-
-        // 如果指定了单个文件，复制到输入目录
+        if (filePath && dirPath) return { kind: 'error', text: '--file 和 --dir 只能选择一个。' };
         if (filePath) {
           if (!existsSync(filePath)) {
             return { kind: 'error', text: `文件不存在: ${filePath}` };
@@ -975,24 +1004,17 @@ function apply(ctx) {
           if (!SUPPORTED_EXTS.has(extname(filePath).toLowerCase())) {
             return { kind: 'error', text: '只支持 PDF / DOCX / TXT / MD 文件' };
           }
-          const dest = join(INPUT_DIR, basename(filePath));
-          await copyFile(filePath, dest);
-          useDir = INPUT_DIR;
         }
-
-        // 如果指定了目录
         if (dirPath) {
-          if (!existsSync(dirPath)) {
+          if (!existsSync(dirPath) || !(await stat(dirPath)).isDirectory()) {
             return { kind: 'error', text: `目录不存在: ${dirPath}` };
           }
-          useDir = dirPath;
         }
-
-        // 检查输入目录是否有支持的文献文件
+        const outputDir = currentRun?.outputDir || createConversationProjectDir(invocation.agent);
+        const useDir = currentRun?.outputDir && currentRun.status !== 'initialized'
+          ? currentRun.inputDir
+          : await prepareProjectInput(outputDir, filePath, dirPath);
         const docCount = await countDocs(useDir);
-        if (docCount === 0 && !filePath && !dirPath) useDir = undefined;
-
-        const outputDir = currentRun?.outputDir || createConversationProjectDir(invocation.agent, topic);
         const runState = startPipeline(ctx, topic, useDir, journalId, experimentCommand, resultsFile, outputDir, invocation.agent, 'topic', researchDirection);
 
         const fileInfo = filePath ? `文献: ${basename(filePath)}` : docCount > 0 ? `本地文献数量: ${docCount} 篇` : '本地文献: 无，将使用联网检索';
@@ -1007,9 +1029,9 @@ function apply(ctx) {
           `日志: ${runState.logPath}`,
           '',
           '关键阶段:',
-          `  联网选题 (${routeLabel('DISCOVERY')}) → 研究方案 (${routeLabel('PROTOCOL')})`,
+          '  联网选题 → 研究方案',
           `  文献与前言 → 实验运行与数据验收 → 方法、结果和讨论`,
-          `  两轮跨模型专家评审 → 期刊格式 → 投稿包与导出`,
+          '  两轮跨模型专家评审 → 期刊格式 → 导出与投稿包',
           '',
           '联网选题完成后，工作台会等待你确认最终研究问题；确认后自动完成其余阶段。',
         ].join('\n');
@@ -1026,4 +1048,4 @@ function apply(ctx) {
   }
 }
 
-export { apply, inject, name };
+export { apply, inject, name, prepareProjectInput, WORKBENCH_STAGE_LABELS };

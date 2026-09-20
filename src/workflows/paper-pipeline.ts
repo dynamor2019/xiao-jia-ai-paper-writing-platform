@@ -14,7 +14,7 @@
 
 import { writeFile, readFile, mkdir, readdir, rename, rm, copyFile } from 'node:fs/promises';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, extname, basename, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -106,6 +106,7 @@ export class PaperPipeline {
     this.extractedTextDir = join(this.workDir, 'extracted-texts');
     // 尝试从断点恢复
     const saved = this.loadState();
+    this.inputDir ||= saved?.metadata?.inputDir;
     const effectiveJournalId = options.journalId || saved?.metadata?.targetJournalId;
     this.journalProfile = getJournalProfile(effectiveJournalId);
     if (effectiveJournalId && effectiveJournalId !== 'general' && !this.journalProfile) {
@@ -125,6 +126,7 @@ export class PaperPipeline {
     this.state.metadata.resultsFile = options.resultsFile || this.state.metadata.resultsFile;
     this.state.metadata.researchDirection = options.researchDirection || this.state.metadata.researchDirection;
     this.state.metadata.outputDir = this.outputDir;
+    this.state.metadata.inputDir = options.inputDir || this.state.metadata.inputDir;
     this.state.metadata.paperProjectId = options.paperProjectId || this.state.metadata.paperProjectId;
     this.state.stage = migrateLegacyStage(this.state.stage);
   }
@@ -1039,6 +1041,8 @@ async function main() {
     process.exit(1);
   }
 
+  if (!outputDir && !paperProjectId) paperProjectId = `paper-${randomUUID()}`;
+
   // 加载 .env
   try {
     const dotenv = await import('dotenv');
@@ -1059,6 +1063,8 @@ async function main() {
     console.log('  自动通过审批');
     return true;
   }, { inputDir, journalId, experimentCommand, resultsFile, outputDir, paperProjectId, researchDirection });
+
+  if (paperProjectId) console.log(`[论文项目ID] ${paperProjectId}`);
 
   const finalState = await pipeline.run();
   if (finalState.metadata.awaitingApproval) process.exitCode = 3;

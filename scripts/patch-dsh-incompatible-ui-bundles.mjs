@@ -1,17 +1,16 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const PROFILE_PACKAGE = join(
-  process.env.USERPROFILE || 'C:\\Users\\Administrator',
-  '.dsh',
+  process.env.DSH_HOME || join(homedir(), '.dsh'),
   'profiles',
   'web',
   'package.json',
 );
 const PROFILE_WORKSPACE = join(
-  process.env.USERPROFILE || 'C:\\Users\\Administrator',
-  '.dsh',
+  process.env.DSH_HOME || join(homedir(), '.dsh'),
   'profiles',
   'web',
   'pnpm-workspace.yaml',

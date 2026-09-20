@@ -1,6 +1,6 @@
 {
   "name": "xiao-jia-ai-paper-writing-platform",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "小贾AI科研论文写作平台：面向科技论文研究、写作、校验、导出与投稿的一站式 DSH 工作台",
   "type": "module",
   "main": "electron/main.cjs",
@@ -26,11 +26,11 @@
     "update:dsh": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-dsh-safe.ps1",
     "sync:dsh": "node scripts/sync-dsh-runtime.mjs",
     "word": "npm run build --silent && node scripts/md-to-docx.mjs",
-    "paper": "tsx src/workflows/paper-pipeline.ts",
-    "paper:cli": "tsx src/workflows/paper-pipeline.ts",
+    "paper": "node scripts/paper-cli.mjs",
+    "paper:cli": "node scripts/paper-cli.mjs",
     "paper:validate": "tsx src/workflows/validate-paper.ts",
     "model:health": "npm run build --silent && node scripts/model-health-check.mjs",
-    "test": "tsx --test src/plugins/verification/paper-quality-validator.test.ts src/plugins/research/research-lifecycle.test.ts src/lib/model-client.test.ts"
+    "test": "tsx --test src/plugins/verification/paper-quality-validator.test.ts src/plugins/research/research-lifecycle.test.ts src/lib/model-client.test.ts scripts/paper-integration.test.mjs"
   },
   "keywords": [
     "dsh",
@@ -68,7 +68,8 @@
     "dotenv": "^17.4.2",
     "dsh-univer-office": "^0.2.14",
     "mammoth": "^1.12.1",
-    "pdf-parse": "^2.4.5"
+    "pdf-parse": "^2.4.5",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
