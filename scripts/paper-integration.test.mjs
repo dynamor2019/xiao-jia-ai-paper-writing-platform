@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { WORKBENCH_STAGE_LABELS, prepareProjectInput } from '../config/dsh/web/paper-command.js';
-import { PIPELINE_STAGES } from '../src/workflows/paper-pipeline.ts';
+import { PaperPipeline, PIPELINE_STAGES } from '../src/workflows/paper-pipeline.ts';
 import { resolvePaperModelEnv } from './paper-model-env.mjs';
 
 test('workbench stages match the pipeline contract', () => {
@@ -61,6 +61,7 @@ test('a CLI project can be attached to a Web session', async () => {
     const commands = new Map();
     apply({
       commands: { register: (command) => commands.set(command.name, command) },
+      goals: { get: () => undefined },
       systemPrompt: { context: () => {} },
       effect: () => {},
     });
@@ -74,6 +75,76 @@ test('a CLI project can be attached to a Web session', async () => {
     else process.env.PAPER_DATA_ROOT = previousRoot;
     if (previousProject === undefined) delete process.env.DSH_PAPER_PROJECT_DIR;
     else process.env.DSH_PAPER_PROJECT_DIR = previousProject;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a running CLI project stays running when attached to Web', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-active-'));
+  const previousRoot = process.env.PAPER_DATA_ROOT;
+  const previousProject = process.env.DSH_PAPER_PROJECT_DIR;
+  try {
+    process.env.PAPER_DATA_ROOT = root;
+    process.env.DSH_PAPER_PROJECT_DIR = root;
+    const projectDir = join(root, 'output', 'paper-projects', 'paper-cli-active');
+    await mkdir(join(projectDir, '.dsh-state'), { recursive: true });
+    await writeFile(join(projectDir, '.dsh-state', 'paper-pipeline-state.json'), JSON.stringify({
+      topic: 'Active topic', stage: 'literature-search', metadata: { paperProjectId: 'paper-cli-active' },
+    }));
+    await writeFile(join(projectDir, '.dsh-state', 'paper-pipeline.lock.json'), JSON.stringify({ pid: process.pid }));
+    const { apply } = await import(`../config/dsh/web/paper-command.js?active=${Date.now()}`);
+    const commands = new Map();
+    const contexts = new Map();
+    apply({
+      commands: { register: (command) => commands.set(command.name, command) },
+      goals: { get: () => undefined },
+      systemPrompt: { context: (context) => contexts.set(context.name, context) },
+      effect: () => {},
+    });
+    const agent = { id: 'session-active' };
+    const result = await commands.get('paper-attach').handler({ rawInput: 'paper-cli-active', agent });
+    assert.equal(result.kind, 'success');
+    const state = JSON.parse(await readFile(join(root, '.dsh-state', 'paper-runs', 'session-active.json'), 'utf8'));
+    assert.equal(state.status, 'running');
+    assert.equal(state.pid, process.pid);
+    assert.match(contexts.get('paper:active-project').text({ agent }), /paper-cli-active/);
+    const resume = await commands.get('paper-resume').handler({ agent });
+    assert.match(resume.text, /正在进程/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.PAPER_DATA_ROOT;
+    else process.env.PAPER_DATA_ROOT = previousRoot;
+    if (previousProject === undefined) delete process.env.DSH_PAPER_PROJECT_DIR;
+    else process.env.DSH_PAPER_PROJECT_DIR = previousProject;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a paper project rejects a second writer', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-lock-'));
+  try {
+    const stateDir = join(root, '.dsh-state');
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, 'paper-pipeline.lock.json'), JSON.stringify({ pid: process.pid }));
+    const pipeline = new PaperPipeline('Lock test', undefined, { outputDir: root });
+    await assert.rejects(pipeline.run(), /正由进程/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a stale paper project lock can be reclaimed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-stale-lock-'));
+  try {
+    const stateDir = join(root, '.dsh-state');
+    const lockPath = join(stateDir, 'paper-pipeline.lock.json');
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(lockPath, JSON.stringify({ pid: 2147483647 }));
+    const pipeline = new PaperPipeline('Stale lock test', undefined, { outputDir: root });
+    const release = pipeline.acquireProjectLock();
+    assert.equal(JSON.parse(await readFile(lockPath, 'utf8')).pid, process.pid);
+    release();
+    await assert.rejects(readFile(lockPath), { code: 'ENOENT' });
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

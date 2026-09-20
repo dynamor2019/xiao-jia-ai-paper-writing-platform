@@ -15,7 +15,7 @@ description: 从联网选题、研究方案、程序实验、数据验收到逐�
 
 ## 调用方式
 
-使用 bash 工具执行（工作目录 F:\dsh）：
+使用 bash 工具在项目根目录执行：
 
 ```bash
 npm run paper -- "用户的论文选题"
@@ -37,7 +37,7 @@ npm run paper -- "用户的论文选题" --journal "automation-in-construction"
 
 ## 工作流程（20 阶段）
 
-工具按以下顺序执行，输出中会出现 `[阶段 N/20] stage-name` 标记。用户输入首先视为宽泛研究领域，联网选题使用最高能力路由；网页模式严格执行“一个对话对应一篇论文”，首次 `/paper` 将对话绑定到 `./output/papers/<题目--会话ID>/`，同一对话始终复用该目录，若要写另一篇必须新建对话。论文不得直接写入 `output/` 根目录；项目公开目录只保留 `milestones/` 与 `final/`，逐段草稿、提取文本、日志及请求文件进入 `.dsh-state/`，完整成功后自动清理临时运行区，仅保留断点状态。任何论文正文都不得早于实验与数据门禁；只有当前结果哈希通过结构完整性、科学/统计合理性和独立复算溯源三重校验，才能开始引言、方法、结果、讨论、摘要或结论。正文仍以段落为最小事务，每生成一段就写入隐藏检查点并同步保存状态。
+工具按以下顺序执行，输出中会出现 `[阶段 N/20] stage-name` 标记。用户输入首先视为宽泛研究领域，联网选题使用最高能力路由；网页模式严格执行“一个对话对应一篇论文”，首次 `/paper` 将对话绑定到数据目录下的 `output/paper-projects/paper-<会话ID>/`，同一对话始终复用该目录，若要写另一篇必须新建对话。CLI 创建的项目通过 `/paper-attach <项目ID>` 接入同一个工作台。普通对话不得另建 `output/papers/` 稿件或维护独立进度；论文操作必须沿用当前工作台绑定的目录及断点。论文不得直接写入 `output/` 根目录；项目公开目录只保留 `milestones/` 与 `final/`，逐段草稿、提取文本、日志及请求文件进入 `.dsh-state/`，完整成功后自动清理临时运行区，仅保留断点状态。任何论文正文都不得早于实验与数据门禁；只有当前结果哈希通过结构完整性、科学/统计合理性和独立复算溯源三重校验，才能开始引言、方法、结果、讨论、摘要或结论。正文仍以段落为最小事务，每生成一段就写入隐藏检查点并同步保存状态。
 
 ## Milestone 与版本管理（强制）
 
@@ -122,15 +122,15 @@ npm run paper -- "用户的论文选题" --journal "automation-in-construction"
 
 ## 输出文件
 
-- `./output/papers/<题目--会话ID>/final/` — Markdown、DOCX、LaTeX 与 BibTeX 最终交付件
-- `./output/papers/<题目--会话ID>/milestones/research-brief.md` — 研究任务书
-- `./output/papers/<题目--会话ID>/milestones/topic-discovery.md` — 联网选题证据
-- `./output/papers/<题目--会话ID>/milestones/analysis-plan.md` — 冻结研究方案
-- `./output/papers/<题目--会话ID>/milestones/claim-evidence-matrix.md` — 主张-证据矩阵
-- `./output/papers/<题目--会话ID>/milestones/data-validation.md` — 数据验收记录
-- `./output/papers/<题目--会话ID>/milestones/reproducibility/` — 实验代码、数据来源清单、清洗后数据和机器可读结果
-- `./output/papers/<题目--会话ID>/milestones/scientific-review-round-1.md` 与 `scientific-review-round-2.md` — 两轮跨模型专家评审及改稿记录
-- `./output/papers/<题目--会话ID>/milestones/` 中的 citation、quality、DOCX 与 submission 报告 — 最终门禁记录
-- `./output/papers/<题目--会话ID>/.dsh-state/` — 隐藏断点状态；其中临时运行区只在任务未完成时存在
+- `output/paper-projects/<项目ID>/final/` — Markdown、DOCX、LaTeX 与 BibTeX 最终交付件
+- `output/paper-projects/<项目ID>/milestones/research-brief.md` — 研究任务书
+- `output/paper-projects/<项目ID>/milestones/topic-discovery.md` — 联网选题证据
+- `output/paper-projects/<项目ID>/milestones/analysis-plan.md` — 冻结研究方案
+- `output/paper-projects/<项目ID>/milestones/claim-evidence-matrix.md` — 主张-证据矩阵
+- `output/paper-projects/<项目ID>/milestones/data-validation.md` — 数据验收记录
+- `output/paper-projects/<项目ID>/milestones/reproducibility/` — 实验代码、数据来源清单、清洗后数据和机器可读结果
+- `output/paper-projects/<项目ID>/milestones/scientific-review-round-1.md` 与 `scientific-review-round-2.md` — 两轮跨模型专家评审及改稿记录
+- `output/paper-projects/<项目ID>/milestones/` 中的 citation、quality、DOCX 与 submission 报告 — 最终门禁记录
+- `output/paper-projects/<项目ID>/.dsh-state/` — 隐藏断点状态；其中临时运行区只在任务未完成时存在
 
 导出 Word 时不得用普通文本替代公式，也不得在 Pandoc 失败后把 Markdown 文件报告为 DOCX 成功；失败时保留源 Markdown 并向用户显示真实错误。

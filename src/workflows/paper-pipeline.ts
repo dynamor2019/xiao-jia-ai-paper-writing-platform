@@ -13,7 +13,7 @@
  */
 
 import { writeFile, readFile, mkdir, readdir, rename, rm, copyFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, extname, basename, resolve } from 'node:path';
@@ -41,6 +41,7 @@ import { exportToDocx } from '../plugins/export/docx-exporter.js';
 import { exportToLatex } from '../plugins/export/latex-exporter.js';
 
 const STATE_FILE = 'paper-pipeline-state.json';
+const LOCK_FILE = 'paper-pipeline.lock.json';
 
 // 需要人工审批的阶段
 const APPROVAL_STAGES: PipelineStage[] = ['topic-confirmation', 'protocol-design', 'outline-generation', 'submission-readiness'];
@@ -148,6 +149,16 @@ export class PaperPipeline {
 
   /** 运行完整工作流 */
   async run(): Promise<PipelineState> {
+    const releaseLock = this.acquireProjectLock();
+    try {
+      this.saveState();
+      return await this.runLocked();
+    } finally {
+      releaseLock();
+    }
+  }
+
+  private async runLocked(): Promise<PipelineState> {
     // 启动时打印模型路由表
     printRoutingTable();
     console.log(`[目标期刊] ${this.journalProfile?.name || '通用论文模式'}`);
@@ -193,6 +204,43 @@ export class PaperPipeline {
     await this.cleanupRuntimeFiles();
     console.log('\n研究、写作、质量与投稿前交付阶段全部完成。');
     return this.state;
+  }
+
+  private acquireProjectLock(): () => void {
+    mkdirSync(this.stateDir, { recursive: true });
+    const lockPath = join(this.stateDir, LOCK_FILE);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const fd = openSync(lockPath, 'wx');
+        try {
+          writeFileSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+        } catch (writeError) {
+          closeSync(fd);
+          unlinkSync(lockPath);
+          throw writeError;
+        }
+        closeSync(fd);
+        return () => unlinkSync(lockPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        let ownerPid: number | undefined;
+        try {
+          ownerPid = JSON.parse(readFileSync(lockPath, 'utf8')).pid;
+          if (Number.isInteger(ownerPid)) process.kill(ownerPid!, 0);
+          else ownerPid = undefined;
+        } catch (checkError) {
+          if ((checkError as NodeJS.ErrnoException).code === 'EPERM') throw new Error(`论文项目正由进程 ${ownerPid} 使用`);
+          ownerPid = undefined;
+        }
+        if (ownerPid) throw new Error(`论文项目正由进程 ${ownerPid} 使用`);
+        try {
+          unlinkSync(lockPath);
+        } catch (removeError) {
+          if ((removeError as NodeJS.ErrnoException).code !== 'ENOENT') throw removeError;
+        }
+      }
+    }
+    throw new Error(`无法取得论文项目锁: ${lockPath}`);
   }
 
   /** 执行单个阶段 */

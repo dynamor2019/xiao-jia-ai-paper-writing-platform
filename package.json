@@ -1,6 +1,6 @@
 {
   "name": "xiao-jia-ai-paper-writing-platform",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "小贾AI科研论文写作平台：面向科技论文研究、写作、校验、导出与投稿的一站式 DSH 工作台",
   "type": "module",
   "main": "electron/main.cjs",
@@ -69,13 +69,13 @@
     "dsh-univer-office": "^0.2.14",
     "mammoth": "^1.12.1",
     "pdf-parse": "^2.4.5",
+    "tsx": "^4.16.0",
     "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "electron": "^44.4.2",
     "electron-builder": "^26.15.3",
-    "tsx": "^4.16.0",
     "typescript": "^5.5.0"
   },
   "build": {

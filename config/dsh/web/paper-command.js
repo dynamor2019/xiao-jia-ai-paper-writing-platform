@@ -99,6 +99,16 @@ async function readJsonBody(req, maxBytes = 4096) {
 
 function registerTargetJournalContext(ctx) {
   ctx.systemPrompt.context({
+    name: 'paper:active-project',
+    order: 29,
+    text: ({ agent }) => {
+      const run = agent && readRunState(agent);
+      return run?.outputDir
+        ? `本对话绑定的唯一论文项目：${run.outputDir}（项目 ID: ${run.paperProjectId}）。状态由 /paper-workbench 与 /paper-status 读取同一流水线断点。论文操作只在此目录进行；如需继续、校验或导出，使用对应 /paper-* 命令，不得新建平行稿件或独立进度。`
+        : '本对话尚未绑定论文项目。完整论文任务先使用 /paper 建档；接入 CLI 项目使用 /paper-attach。不要在工作台之外自行创建平行论文目录。';
+    },
+  });
+  ctx.systemPrompt.context({
     name: 'paper:target-journal',
     order: 30,
     text: () => targetJournalId
@@ -485,30 +495,19 @@ function outputDirFromRunLog(agent) {
   }
 }
 
-function isRecoverableRunText(text) {
-  return /中转站上游暂不可用|Service temporarily unavailable|Connection error|TRANSPORT|fetch failed|ECONNRESET|ETIMEDOUT|TimeoutError|operation was aborted|aborted due to timeout|HTTP 408|HTTP 409|HTTP 429|HTTP 5\d\d|\[5\d\d\]|\[429\]|EMPTY_RESPONSE|completed with no visible content/i.test(text || '');
-}
-
-function maybeAutoResumePipeline(ctx, agent, state) {
-  if (!state || state.status !== 'failed') return state;
-  const outputDir = state.outputDir || outputDirFromRunLog(agent);
-  const checkpoint = outputDir && join(outputDir, '.dsh-state', 'paper-pipeline-state.json');
-  if (!checkpoint || !existsSync(checkpoint)) return state;
-  let log = '';
+function activeProjectPid(outputDir) {
+  if (!outputDir) return undefined;
   try {
-    log = readFileSync(runLogPath(agent), 'utf8').slice(-24_000);
+    const { pid } = JSON.parse(readFileSync(join(outputDir, '.dsh-state', 'paper-pipeline.lock.json'), 'utf8'));
+    return processIsRunning(pid) ? pid : undefined;
   } catch {
-    log = '';
+    return undefined;
   }
-  if (!isRecoverableRunText(`${state.error || ''}\n${log}`)) return state;
-  const lastAttemptAt = state.autoResumeAttemptedAt ? Date.parse(state.autoResumeAttemptedAt) : 0;
-  if (Number.isFinite(lastAttemptAt) && Date.now() - lastAttemptAt < 60_000) return state;
-  saveRunState(agent, { ...state, outputDir, autoResumeAttemptedAt: new Date().toISOString() });
-  appendFileSync(runLogPath(agent), `\n[自动恢复] 状态读取发现可恢复中断，自动从检查点继续。\n`, 'utf8');
-  return startPipeline(ctx, state.topic, state.inputDir, state.journalId, state.experimentCommand, state.resultsFile, outputDir, agent, state.approvalMode || 'auto', state.researchDirection);
 }
 
 function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resultsFile, outputDir, agent, approvalMode = 'topic', researchDirection = {}) {
+  const ownerPid = activeProjectPid(outputDir);
+  if (ownerPid) throw new Error(`论文项目正在进程 ${ownerPid} 中运行，请等待完成后再恢复。`);
   const tsxCli = join(PROJECT_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs');
   const pipeline = join(PROJECT_DIR, 'src', 'workflows', 'paper-pipeline.ts');
   const statePath = runStatePath(agent);
@@ -575,7 +574,7 @@ function goalStatusText(ctx, invocation) {
 }
 
 function statusText(ctx, invocation) {
-  const state = maybeAutoResumePipeline(ctx, invocation.agent, readRunState(invocation.agent));
+  const state = readRunState(invocation.agent);
   const goalStatus = goalStatusText(ctx, invocation);
   if (!state) return `${goalStatus}\n后台流水线: 尚未启动`;
   const running = state.status === 'running' && processIsRunning(state.pid);
@@ -626,7 +625,7 @@ async function workbenchText(ctx, invocation) {
 }
 
 async function workbenchSnapshot(agent) {
-  const state = maybeAutoResumePipeline(null, agent, readRunState(agent));
+  const state = readRunState(agent);
   const baseDir = state?.outputDir;
   if (!baseDir) {
     return {
@@ -776,6 +775,7 @@ function apply(ctx) {
       const checkpoint = readPipelineState(outputDir);
       if (!checkpoint?.topic) return { kind: 'error', text: '未找到该项目的流水线检查点。' };
       const awaiting = checkpoint.metadata?.awaitingApproval === 'topic-confirmation';
+      const ownerPid = activeProjectPid(outputDir);
       saveRunState(invocation.agent, {
         topic: checkpoint.metadata?.originalTopic || checkpoint.topic,
         journalId: checkpoint.metadata?.targetJournalId,
@@ -783,8 +783,9 @@ function apply(ctx) {
         inputDir: checkpoint.metadata?.inputDir || (existsSync(join(outputDir, 'input')) ? join(outputDir, 'input') : undefined),
         outputDir,
         paperProjectId: projectId,
-        status: awaiting ? 'awaiting-confirmation' : existsSync(join(outputDir, 'milestones', 'submission-manifest.md')) && /READY FOR AUTHOR CONFIRMATION/.test(readFileSync(join(outputDir, 'milestones', 'submission-manifest.md'), 'utf8')) ? 'completed' : 'failed',
+        status: ownerPid ? 'running' : awaiting ? 'awaiting-confirmation' : existsSync(join(outputDir, 'milestones', 'submission-manifest.md')) && /READY FOR AUTHOR CONFIRMATION/.test(readFileSync(join(outputDir, 'milestones', 'submission-manifest.md'), 'utf8')) ? 'completed' : 'failed',
         stage: checkpoint.stage,
+        pid: ownerPid,
         startedAt: checkpoint.createdAt || new Date().toISOString(),
         logPath: runLogPath(invocation.agent),
       });
@@ -802,6 +803,7 @@ function apply(ctx) {
       if (run.status !== 'awaiting-confirmation' || run.stage !== 'topic-confirmation') {
         return { kind: 'error', text: '当前不处于研究问题确认阶段，请使用 /paper-status 查看真实状态。' };
       }
+      if (activeProjectPid(run.outputDir)) return { kind: 'error', text: '论文项目仍在运行，请等待完成后再确认。' };
       const pipeline = readPipelineState(run.outputDir);
       if (!pipeline?.topic) return { kind: 'error', text: '没有找到联网选题结果，无法确认。' };
       startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, run.outputDir, invocation.agent, 'auto', run.researchDirection);
@@ -913,6 +915,8 @@ function apply(ctx) {
         return { kind: 'error', text: '流水线正在等待你确认最终研究问题，请使用 /paper-confirm。' };
       }
       const pipelineRunning = run?.status === 'running' && processIsRunning(run.pid);
+      const projectRunning = activeProjectPid(run?.outputDir);
+      if (projectRunning) return { kind: 'success', text: `论文项目正在进程 ${projectRunning} 中运行，无需重复恢复。` };
       if (run && run.status !== 'completed' && !pipelineRunning) {
         const outputDir = run.outputDir || outputDirFromRunLog(invocation.agent);
         const checkpoint = outputDir && join(outputDir, '.dsh-state', 'paper-pipeline-state.json');

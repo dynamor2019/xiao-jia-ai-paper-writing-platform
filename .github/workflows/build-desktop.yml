@@ -43,6 +43,20 @@ jobs:
       - name: Package desktop app
         run: npm run desktop:pack:github
 
+      - name: Verify packaged paper runtime
+        shell: pwsh
+        run: |
+          $app = "release/win-unpacked/resources/app"
+          $required = @(
+            "$app/node_modules/tsx/dist/cli.mjs",
+            "$app/node_modules/@esbuild/win32-x64/esbuild.exe",
+            "$app/src/workflows/paper-pipeline.ts",
+            "$app/scripts/paper-background-runner.mjs"
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) { throw "Desktop package missing: $path" }
+          }
+
       - name: Zip desktop app
         shell: pwsh
         run: |
