@@ -6,6 +6,7 @@
  */
 
 import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { delimiter, basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -36,7 +37,8 @@ export async function exportToDocx(
   options: ExportOptions
 ): Promise<ToolResult<{ filePath: string; format: 'docx' | 'md' }>> {
   try {
-    const outputDir = options.outputDir || resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data', process.env.OUTPUT_DIR || 'output');
+    const dataRoot = process.env.PAPER_DATA_ROOT || join(process.env.USERPROFILE || homedir(), 'Documents', 'XiaoJiaAI Data');
+    const outputDir = options.outputDir || resolve(dataRoot, process.env.OUTPUT_DIR || 'output');
     await mkdir(outputDir, { recursive: true });
 
     // 生成 Markdown 内容

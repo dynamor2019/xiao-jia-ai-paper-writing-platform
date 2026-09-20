@@ -105,6 +105,7 @@ export interface PipelineState {
     experimentCommand?: string;
     resultsFile?: string;
     outputDir?: string;
+    paperProjectId?: string;
     awaitingApproval?: PipelineStage;
     researchDirection?: {
       focus?: string;

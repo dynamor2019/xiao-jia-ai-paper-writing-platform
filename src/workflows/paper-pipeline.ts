@@ -15,6 +15,7 @@
 import { writeFile, readFile, mkdir, readdir, rename, rm, copyFile } from 'node:fs/promises';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
 import { join, extname, basename, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -43,6 +44,28 @@ const STATE_FILE = 'paper-pipeline-state.json';
 
 // 需要人工审批的阶段
 const APPROVAL_STAGES: PipelineStage[] = ['topic-confirmation', 'protocol-design', 'outline-generation', 'submission-readiness'];
+export const PIPELINE_STAGES: PipelineStage[] = [
+  'project-intake',
+  'topic-discovery',
+  'topic-confirmation',
+  'literature-search',
+  'literature-review',
+  'protocol-design',
+  'outline-generation',
+  'experiment-execution',
+  'data-validation',
+  'introduction-writing',
+  'methods-writing',
+  'results-writing',
+  'discussion-writing',
+  'manuscript-completion',
+  'citation-verification',
+  'polishing',
+  'quality-validation',
+  'formatting',
+  'export',
+  'submission-readiness',
+];
 
 interface PipelineOptions {
   inputDir?: string;
@@ -50,6 +73,7 @@ interface PipelineOptions {
   experimentCommand?: string;
   resultsFile?: string;
   outputDir?: string;
+  paperProjectId?: string;
   researchDirection?: NonNullable<PipelineState['metadata']['researchDirection']>;
 }
 
@@ -71,7 +95,7 @@ export class PaperPipeline {
   constructor(topic?: string, onApproval?: (stage: PipelineStage, state: PipelineState) => Promise<boolean>, options: PipelineOptions = {}) {
     this.onApproval = onApproval;
     this.inputDir = options.inputDir;
-    this.outputDir = normalizeOutputDir(options.outputDir || process.env.PAPER_OUTPUT_DIR || createPaperOutputDir(topic || 'paper'));
+    this.outputDir = normalizeOutputDir(options.outputDir || process.env.PAPER_OUTPUT_DIR || createPaperOutputDir(topic || 'paper', options.paperProjectId));
     this.stateDir = join(this.outputDir, '.dsh-state');
     this.milestoneDir = join(this.outputDir, 'milestones');
     this.runtimeDir = join(this.stateDir, 'runtime');
@@ -101,6 +125,7 @@ export class PaperPipeline {
     this.state.metadata.resultsFile = options.resultsFile || this.state.metadata.resultsFile;
     this.state.metadata.researchDirection = options.researchDirection || this.state.metadata.researchDirection;
     this.state.metadata.outputDir = this.outputDir;
+    this.state.metadata.paperProjectId = options.paperProjectId || this.state.metadata.paperProjectId;
     this.state.stage = migrateLegacyStage(this.state.stage);
   }
 
@@ -126,28 +151,7 @@ export class PaperPipeline {
     console.log(`[目标期刊] ${this.journalProfile?.name || '通用论文模式'}`);
     console.log(`[论文工作目录] ${this.outputDir}`);
 
-    const stages: PipelineStage[] = [
-      'project-intake',
-      'topic-discovery',
-      'topic-confirmation',
-      'literature-search',
-      'literature-review',
-      'protocol-design',
-      'outline-generation',
-      'experiment-execution',
-      'data-validation',
-      'introduction-writing',
-      'methods-writing',
-      'results-writing',
-      'discussion-writing',
-      'manuscript-completion',
-      'citation-verification',
-      'polishing',
-      'quality-validation',
-      'formatting',
-      'export',
-      'submission-readiness',
-    ];
+    const stages = PIPELINE_STAGES;
 
     // 从当前阶段开始
     const startIndex = stages.indexOf(this.state.stage);
@@ -936,7 +940,10 @@ function safeFileBase(name: string): string {
     .replace(/[. ]+$/, '') || 'paper';
 }
 
-function createPaperOutputDir(topic: string): string {
+function createPaperOutputDir(topic: string, paperProjectId?: string): string {
+  if (paperProjectId) {
+    return join(paperOutputRoot(), 'paper-projects', safeFileBase(paperProjectId));
+  }
   const now = new Date();
   const stamp = [
     now.getFullYear(),
@@ -961,7 +968,8 @@ function normalizeOutputDir(outputDir: string): string {
 }
 
 function paperOutputRoot(): string {
-  return resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data', process.env.OUTPUT_DIR || 'output');
+  const dataRoot = process.env.PAPER_DATA_ROOT || join(process.env.USERPROFILE || homedir(), 'Documents', 'XiaoJiaAI Data');
+  return resolve(dataRoot, process.env.OUTPUT_DIR || 'output');
 }
 
 function createParagraphPlan(
@@ -990,6 +998,7 @@ async function main() {
   let experimentCommand: string | undefined;
   let resultsFile: string | undefined;
   let outputDir: string | undefined;
+  let paperProjectId: string | undefined;
   const researchDirection: NonNullable<PipelineState['metadata']['researchDirection']> = {};
   let approvalMode: 'auto' | 'topic' = 'auto';
 
@@ -1006,6 +1015,8 @@ async function main() {
       resultsFile = args[++i];
     } else if (args[i] === '--output-dir' && args[i + 1]) {
       outputDir = args[++i];
+    } else if (args[i] === '--project-id' && args[i + 1]) {
+      paperProjectId = args[++i];
     } else if (args[i] === '--focus' && args[i + 1]) {
       researchDirection.focus = args[++i];
     } else if (args[i] === '--scope' && args[i + 1]) {
@@ -1047,7 +1058,7 @@ async function main() {
     }
     console.log('  自动通过审批');
     return true;
-  }, { inputDir, journalId, experimentCommand, resultsFile, outputDir, researchDirection });
+  }, { inputDir, journalId, experimentCommand, resultsFile, outputDir, paperProjectId, researchDirection });
 
   const finalState = await pipeline.run();
   if (finalState.metadata.awaitingApproval) process.exitCode = 3;

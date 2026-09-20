@@ -5,6 +5,7 @@
  */
 
 import { writeFile, mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Paper, Section, ToolResult } from '../../types.js';
 
@@ -24,7 +25,8 @@ export async function exportToLatex(
   options: LatexExportOptions
 ): Promise<ToolResult<{ texPath: string; bibPath: string }>> {
   try {
-    const outputDir = options.outputDir || resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data', process.env.OUTPUT_DIR || 'output');
+    const dataRoot = process.env.PAPER_DATA_ROOT || join(process.env.USERPROFILE || homedir(), 'Documents', 'XiaoJiaAI Data');
+    const outputDir = options.outputDir || resolve(dataRoot, process.env.OUTPUT_DIR || 'output');
     await mkdir(outputDir, { recursive: true });
 
     const template = options.template || 'article';

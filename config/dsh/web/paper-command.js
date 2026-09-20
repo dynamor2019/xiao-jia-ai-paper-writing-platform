@@ -53,15 +53,26 @@ const JOURNALS = {
   'expert-systems-with-applications': 'Expert Systems with Applications',
 };
 const WORKBENCH_STAGE_LABELS = [
-  '研究建档',
-  '联网选题',
-  '研究问题确认',
-  '文献与证据',
-  '冻结研究方案',
-  '实验与数据',
-  '论文源稿',
-  '两轮评审与质量门禁',
-  '投稿文件',
+  ['project-intake', '研究建档'],
+  ['topic-discovery', '联网选题'],
+  ['topic-confirmation', '研究问题确认'],
+  ['literature-search', '文献检索'],
+  ['literature-review', '文献精读'],
+  ['protocol-design', '冻结研究方案'],
+  ['outline-generation', '论文大纲'],
+  ['experiment-execution', '实验运行'],
+  ['data-validation', '数据验收'],
+  ['introduction-writing', '前言与相关工作'],
+  ['methods-writing', '方法与实验设置'],
+  ['results-writing', '研究结果'],
+  ['discussion-writing', '讨论与局限'],
+  ['manuscript-completion', '摘要结论与全文'],
+  ['citation-verification', '引用核验'],
+  ['polishing', '润色降重'],
+  ['quality-validation', '两轮评审与质量门禁'],
+  ['formatting', '期刊格式'],
+  ['export', '导出文件'],
+  ['submission-readiness', '投稿清单'],
 ];
 
 function readTargetJournalId() {
@@ -210,6 +221,10 @@ function sessionKey(agent) {
   return safePathSegment(agent?.id || 'unknown-session', 80);
 }
 
+function paperProjectId(agent) {
+  return `paper-${sessionKey(agent)}`;
+}
+
 function runStatePath(agent) {
   return join(RUNS_DIR, `${sessionKey(agent)}.json`);
 }
@@ -219,8 +234,7 @@ function runLogPath(agent) {
 }
 
 function createConversationProjectDir(agent, topic) {
-  const suffix = sessionKey(agent).slice(-12);
-  return join(OUTPUT_DIR, 'papers', `${safePathSegment(topic)}--${suffix}`);
+  return join(OUTPUT_DIR, 'paper-projects', paperProjectId(agent));
 }
 
 function activePaperDir(agent) {
@@ -386,7 +400,7 @@ async function initializeResearchWorkspace(topic, journalId, agent) {
   for (const [file, content] of Object.entries(templates)) {
     if (createFileIfMissing(join(milestoneDir, file), content)) created.push(file);
   }
-  writeFileSync(join(outputDir, '.dsh-state', 'research-workspace.json'), JSON.stringify({ topic, journalId, journalName, outputDir, updatedAt: new Date().toISOString() }, null, 2), 'utf8');
+  writeFileSync(join(outputDir, '.dsh-state', 'research-workspace.json'), JSON.stringify({ topic, journalId, journalName, outputDir, paperProjectId: paperProjectId(agent), updatedAt: new Date().toISOString() }, null, 2), 'utf8');
   const current = readRunState(agent);
   saveRunState(agent, { ...current, topic, journalId, journalName, outputDir, status: current?.status || 'initialized' });
   return { created, journalName, outputDir };
@@ -446,7 +460,7 @@ function readRunState(agent) {
 
 function saveRunState(agent, state) {
   if (!existsSync(RUNS_DIR)) mkdirSync(RUNS_DIR, { recursive: true });
-  writeFileSync(runStatePath(agent), JSON.stringify({ ...state, sessionId: String(agent?.id || ''), updatedAt: new Date().toISOString() }, null, 2), 'utf8');
+  writeFileSync(runStatePath(agent), JSON.stringify({ ...state, sessionId: String(agent?.id || ''), paperProjectId: state.paperProjectId || paperProjectId(agent), updatedAt: new Date().toISOString() }, null, 2), 'utf8');
 }
 
 function processIsRunning(pid) {
@@ -513,6 +527,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
   if (researchDirection.constraints) pipelineArgs.push('--constraints', researchDirection.constraints);
   pipelineArgs.push('--approval-mode', approvalMode);
   pipelineArgs.push('--output-dir', outputDir);
+  pipelineArgs.push('--project-id', paperProjectId(agent));
   const requestPath = join(RUNS_DIR, `${sessionKey(agent)}-${Date.now()}.request.json`);
   writeFileSync(requestPath, JSON.stringify({
     projectDir: PROJECT_DIR,
@@ -530,6 +545,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
       researchDirection,
       approvalMode,
       outputDir,
+      paperProjectId: paperProjectId(agent),
       status: 'running',
       stage: 'starting',
       startedAt: new Date().toISOString(),
@@ -544,7 +560,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
     windowsHide: true,
   });
   child.unref();
-  const state = { topic, inputDir, journalId, journalName: journalId ? JOURNALS[journalId] : undefined, experimentCommand, resultsFile, researchDirection, approvalMode, outputDir, status: 'running', stage: 'starting', pid: child.pid, startedAt: new Date().toISOString(), logPath };
+  const state = { topic, inputDir, journalId, journalName: journalId ? JOURNALS[journalId] : undefined, experimentCommand, resultsFile, researchDirection, approvalMode, outputDir, paperProjectId: paperProjectId(agent), status: 'running', stage: 'starting', pid: child.pid, startedAt: new Date().toISOString(), logPath };
   saveRunState(agent, state);
   return state;
 }
@@ -616,7 +632,7 @@ async function workbenchSnapshot(agent) {
       project: false,
       runStatus: 'idle',
       stage: 'project-intake',
-      stages: WORKBENCH_STAGE_LABELS.map((label) => ({ label, passed: false, status: 'pending' })),
+      stages: WORKBENCH_STAGE_LABELS.map(([id, label]) => ({ id, label, passed: false, status: 'pending' })),
       progress: { completed: 0, total: WORKBENCH_STAGE_LABELS.length, percent: 0 },
       inputCount: await countDocs(INPUT_DIR),
       deliverableCount: 0,
@@ -639,25 +655,18 @@ async function workbenchSnapshot(agent) {
   const word = deliverables.find((row) => row.file.toLowerCase().endsWith('.docx') && !row.file.startsWith('~$'));
   const workspace = readWorkspaceState(agent);
   const pipeline = readPipelineState(baseDir);
-  const stageChecks = [
-    ['研究建档', existsSync(join(baseDir, 'milestones', 'research-brief.md'))],
-    ['联网选题', artifactPassed(join(baseDir, 'milestones', 'topic-discovery.md'))],
-    ['研究问题确认', Boolean(pipeline && !pipeline.metadata?.awaitingApproval && pipeline.stage !== 'topic-confirmation')],
-    ['文献与证据', artifactPassed(join(baseDir, 'milestones', 'claim-evidence-matrix.md'))],
-    ['冻结研究方案', artifactPassed(join(baseDir, 'milestones', 'analysis-plan.md'))],
-    ['实验与数据', artifactPassed(join(baseDir, 'milestones', 'data-validation.md'))],
-    ['论文源稿', Boolean(manuscript)],
-    ['两轮评审与质量门禁', quality === 'PASS'],
-    ['投稿文件', Boolean(word) && quality === 'PASS'],
-  ];
-  const firstPending = stageChecks.findIndex(([, passed]) => !passed);
   const runStatus = running ? 'running' : state.status;
-  const stages = stageChecks.map(([label, passed], index) => {
-    const complete = Boolean(passed);
-    let status = complete ? 'complete' : 'pending';
-    if (!complete && index === firstPending && ['running', 'awaiting-confirmation'].includes(runStatus)) status = 'active';
-    if (!complete && index === firstPending && runStatus === 'failed') status = 'error';
-    return { label, passed: complete, status };
+  const pipelineStage = pipeline?.stage || state.stage || 'project-intake';
+  const currentIndex = Math.max(0, WORKBENCH_STAGE_LABELS.findIndex(([id]) => id === pipelineStage));
+  const stages = WORKBENCH_STAGE_LABELS.map(([id, label], index) => {
+    let status = index < currentIndex ? 'complete' : 'pending';
+    if (runStatus === 'completed') status = 'complete';
+    if (index === currentIndex && ['running', 'awaiting-confirmation'].includes(runStatus)) status = 'active';
+    if (index === currentIndex && runStatus === 'failed') status = 'error';
+    if (id === 'project-intake' && existsSync(join(baseDir, 'milestones', 'research-brief.md')) && status === 'pending') status = 'complete';
+    if (id === 'export' && word && status === 'pending') status = 'complete';
+    if (id === 'quality-validation' && quality === 'PASS' && status === 'pending') status = 'complete';
+    return { id, label, passed: status === 'complete', status };
   });
   const completed = stages.filter((stage) => stage.passed).length;
   return {
@@ -667,8 +676,9 @@ async function workbenchSnapshot(agent) {
     researchDirection: workspace?.researchDirection || state.researchDirection || pipeline?.metadata?.researchDirection || {},
     journalName: workspace?.journalName || state.journalName || '通用论文模式',
     outputDir: baseDir,
+    paperProjectId: workspace?.paperProjectId || pipeline?.metadata?.paperProjectId || state.paperProjectId || paperProjectId(agent),
     runStatus,
-    stage: state.stage,
+    stage: pipelineStage,
     nextRetryAt: state.nextRetryAt,
     recoveryCount: state.recoveryCount,
     stages,

@@ -1,14 +1,16 @@
 import { exec } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import { getModelClient } from '../../lib/model-client.js';
 import type { Paper, PaperNote, ToolResult } from '../../types.js';
 
 const execAsync = promisify(exec);
-const DEFAULT_OUTPUT_DIR = resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data', process.env.OUTPUT_DIR || 'output', 'papers', 'current');
+const DEFAULT_DATA_ROOT = process.env.PAPER_DATA_ROOT || join(process.env.USERPROFILE || homedir(), 'Documents', 'XiaoJiaAI Data');
+const DEFAULT_OUTPUT_DIR = resolve(DEFAULT_DATA_ROOT, process.env.OUTPUT_DIR || 'output', 'papers', 'current');
 interface OpenAlexWork {
   id?: string;
   doi?: string;

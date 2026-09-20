@@ -6,7 +6,12 @@
  * 实际运行时请以 dsh 官方文档为准，必要时调整字段名。
  */
 
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import type { PipelineState } from '../types.js';
+
+const DEFAULT_DATA_ROOT = join(process.env.USERPROFILE || homedir(), 'Documents', 'XiaoJiaAI Data');
 
 export const dshConfig = {
   // 服务端口（dsh 默认 3080，如需修改请用系统环境变量 DSH_PORT，不要放 .env）
@@ -18,7 +23,7 @@ export const dshConfig = {
     // 允许访问的目录
     allowedPaths: [
       './knowledge-base',
-      process.env.PAPER_DATA_ROOT || 'F:\\DSH data',
+      process.env.PAPER_DATA_ROOT || DEFAULT_DATA_ROOT,
       './temp',
     ],
     // 允许执行的命令
@@ -105,7 +110,7 @@ export const dshConfig = {
   // 持久化配置（断点续跑）
   persistence: {
     enabled: true,
-    stateDir: process.env.PAPER_STATE_DIR || 'F:\\DSH data\\.dsh-state',
+    stateDir: process.env.PAPER_STATE_DIR || join(DEFAULT_DATA_ROOT, '.dsh-state'),
     // 每完成一个阶段自动保存状态
     autoSaveOnStageComplete: true,
   },

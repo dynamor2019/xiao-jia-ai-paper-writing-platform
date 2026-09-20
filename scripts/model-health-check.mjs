@@ -1,7 +1,8 @@
 import 'dotenv/config';
 
 import { writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import { getRoute } from '../dist/config/model-routing.js';
 import { getModelClient } from '../dist/lib/model-client.js';
@@ -72,7 +73,8 @@ const report = [
   '',
 ].join('\n');
 
-const output = resolve(process.env.PAPER_DATA_ROOT || 'F:\\DSH data', process.env.PAPER_STATE_DIR || '.dsh-state', 'model-health-check.md');
+const defaultDataRoot = join(process.env.USERPROFILE || homedir(), 'Documents', 'XiaoJiaAI Data');
+const output = resolve(process.env.PAPER_DATA_ROOT || defaultDataRoot, process.env.PAPER_STATE_DIR || '.dsh-state', 'model-health-check.md');
 await writeFile(output, report, 'utf8');
 console.log(report);
 console.log(`Report: ${output}`);

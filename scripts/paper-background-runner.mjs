@@ -85,6 +85,12 @@ async function runPipelineUntilSettled() {
         if (matches.length > 0) {
           state.stage = matches.at(-1)[1].trim();
         }
+        const indexMatches = [...text.matchAll(/\[阶段\s+(\d+)\/(\d+)\]\s+([^\r\n]+)/g)];
+        if (indexMatches.length > 0) {
+          const match = indexMatches.at(-1);
+          state.stageIndex = Number(match[1]);
+          state.stageTotal = Number(match[2]);
+        }
         state.outputDir ||= outputDirFromRunLog(request.projectDir, request.runLogPath);
         saveRunState(request.runStatePath, state);
       };
