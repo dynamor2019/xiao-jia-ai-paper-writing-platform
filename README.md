@@ -229,7 +229,7 @@ GitHub 已配置自动打包：
 scripts\package-desktop.bat
 ```
 
-打包完成后，安装包会生成在 `release` 目录。也可以手动运行：
+打包完成后，安装包会生成在数据根下的 `release` 目录（默认 `F:\DSH data\release`，可用 `DESKTOP_OUTPUT_DIR` 指定），不再写进项目目录。也可以手动运行：
 
 ```bash
 npm run build

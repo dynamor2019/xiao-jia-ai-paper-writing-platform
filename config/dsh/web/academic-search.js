@@ -19,7 +19,8 @@ function abstractFromIndex(index) {
 }
 
 function sourceUrl(work) {
-  return work.doi || work.primary_location?.landing_page_url || work.id;
+  // 优先返回开放获取全文地址，便于后续取全文做引用核验与 PDF 解析
+  return work.open_access?.oa_url || work.doi || work.primary_location?.landing_page_url || work.id;
 }
 
 function mapWork(work) {
@@ -62,6 +63,7 @@ const provider = {
       'authorships',
       'primary_location',
       'abstract_inverted_index',
+      'open_access',
     ].join(','));
 
     const response = await fetch(url, {

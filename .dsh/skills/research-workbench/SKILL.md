@@ -49,6 +49,39 @@ description: 为科技论文研究、证据综合、实验规划和投稿交付�
 - 研究伦理与声明：`research-integrity`
 - 返修与回复：`response-to-reviewers`
 
+### 社会科学 / 经济学实证论文附加路由
+
+当研究包含观察数据分析、政策评估、因果推断或计量建模时，按阶段加载：
+
+| 当前阶段 | 加载 skill |
+|---------|-----------|
+| 文献综述（含系统综述 / PRISMA） | `literature-review` |
+| 识别策略选择（DID / IV / RD / SCM / DML） | `causal-inference` |
+| 预注册 / PAP 冻结 / 数据合约 | `computational-reproducibility` |
+| 运行 Python 实证流水线（清洗→建模→出表出图） | `empirical-analysis-pipeline` |
+| 实证章节写作与系数意义解释 | `aer-paper-sections` |
+| 报告效应量、因果措辞、稳健性描述 | `statistical-reporting` |
+| 引用逐条核验与台账 | `citation-integrity` |
+| 投稿前一致性审计 + 模拟审稿 | `pre-submission-review` |
+| 投稿前降低 AI 写作信号 | `de-aigc` |
+
+**实证论文阶段门禁顺序**（与生命周期步骤 1–12 对应）：
+
+```
+步骤 2  联网选题  ─────────────────────────────────→  literature-review（系统检索）
+步骤 3  系统取证  ─────────────────────────────────→  literature-review（综合与空白识别）
+步骤 4  冻结方案  ─────────────────────────────────→  causal-inference（策略选择 + strategy.md）
+                                                       computational-reproducibility（PAP + 数据合约）
+步骤 5  程序实验  ─────────────────────────────────→  empirical-analysis-pipeline（8 步流水线）
+步骤 6  三重数据验收  ────────────────────────────→  computational-reproducibility（三重校验）
+步骤 8  正文成稿（定量段落）  ───────────────────→  statistical-reporting（效应量 + 识别假设报告）
+步骤 15 引用 + 润色  ────────────────────────────→  citation-integrity（逐条核验）→ de-aigc（如需降低 AI 信号）
+步骤 16 质量校验  ───────────────────────────────→  pre-submission-review（一致性审计）→ paper-quality-gate
+步骤 18–20 格式 + 导出 + 投稿  ─────────────────→  submission-readiness + word-export
+```
+
+实证论文的数据门禁与正文写作顺序不变；上述分支 skill 是对步骤 4–8 的细化，不替代现有生命周期结构。
+
 ## 状态纪律
 
 - “计划中”“运行中”“已保存”“已校验”“可投稿”是不同状态。

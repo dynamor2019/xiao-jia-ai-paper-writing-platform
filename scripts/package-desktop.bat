@@ -33,7 +33,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call npm run desktop:pack
+call npm run desktop:pack:local
 if errorlevel 1 (
   echo 打包失败。
   pause
@@ -41,5 +41,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo 打包完成，文件在 release 目录。
+echo 打包完成，文件在数据根下的 release 目录，不在项目目录内。
 pause
