@@ -9,7 +9,7 @@ description: 执行社会科学 / 经济学实证论文的端到端 Python 分�
 
 - 每步骤产出至少一个落盘文件（表格或图形），不得"运行完不保存"。
 - 每次只改一个决策（样本规则、估计器、聚类层级、导出格式），改完须通过校验门禁再进下一步。
-- 策略文件 `artifacts/strategy.md` 须在 Step 5 之前存在且已提交版本控制。
+- 策略、PAP、数据合约、样本日志和产出索引统一登记到 `milestones/reproducibility/empirical-manifest.json`；不得再生成与流水线脱节的第二套 `artifacts/` 门禁。
 - 任何步骤失败记录到 `analysis_log.md`，回退到上一个通过状态，不跳过。
 
 ## 必装库
@@ -24,28 +24,30 @@ pip install pandas numpy scipy matplotlib seaborn \
 
 ---
 
-## 默认输出合约（每次运行必须产出）
+## 默认输出合约（按设计适用性产出）
 
-### 必须的 5 张表
+### 核心 5 张表
 
 | # | 表 | 文件 |
 |---|---|---|
 | T1 | 描述统计 & 平衡检验（处理组 vs 对照组 + SMD） | `tables/table1_balance.{xlsx,docx,tex}` |
-| T2 ★ | **主回归多列表 M1→M6**（渐进控制 + FE） | `tables/table2_main.{xlsx,docx,tex}` |
+| T2 ★ | **主结果多列表 M1→M6**（渐进控制 / 识别规格 / 主要估计器） | `tables/table2_main.{xlsx,docx,tex}` |
 | T3 | 机制 / 结果阶梯（同一处理，多个结局） | `tables/table3_mechanism.{xlsx,docx,tex}` |
 | T4 | 异质性（分子群 × 主系数） | `tables/table4_heterogeneity.{xlsx,docx,tex}` |
 | T5 | 稳健性汇总（每列一种检验） | `tables/table5_robustness.{xlsx,docx,tex}` |
 
-> **T2 是核心**：M1（原始相关）→ M6（双向 FE + 交互 FE + 聚类 SE）的系数稳定性就是可信度论证本身。不得折叠成单列。
+> **T2 是核心**：M1→M6 要展示从朴素模型到最终识别规格的变化。只有同步处理 DID 才可使用 TWFE；交错 DID 使用 CS/SA/BJS，IV/RD/RCT/截面设计按本设计的主估计器展开。
 
-### 必须的 4 张图
+### 核心 4 张图
 
 | # | 图 | 文件（PNG ≥ 300 dpi + PDF） |
 |---|---|---|
 | F1 | 趋势动机图（处理组 vs 对照组时序） | `figures/fig1_trend.{png,pdf}` |
-| F2 | 事件研究图（DID 预趋势 + 动态效应） | `figures/fig2_event_study.{png,pdf}` |
+| F2 | 事件研究图（仅 DID / 事件研究设计必需） | `figures/fig2_event_study.{png,pdf}` |
 | F3 | 系数图（M1→M6 点估计 + 95% CI） | `figures/fig3_coefplot.{png,pdf}` |
 | F4 | 灵敏度 / 规格曲线 | `figures/fig4_sensitivity.{png,pdf}` |
+
+不适用于当前研究设计的表图不得硬凑；必须在 `empirical-manifest.json` 中登记 `{ "status": "not_applicable", "reason": "..." }`。T2 始终必需，F2 仅 DID / 事件研究必需。
 
 ---
 
@@ -67,9 +69,9 @@ pap = {
     "alpha": 0.05, "power_target": 0.80, "mde_d": 0.20,
     "n_planned": 0, "frozen_at": "", "git_sha": ""
 }
-with open("artifacts/pap.json", "w") as f:
+with open("milestones/reproducibility/pap.json", "w") as f:
     json.dump(pap, f, indent=2)
-# git add artifacts/pap.json && git commit -m "freeze PAP"
+# git add milestones/reproducibility/pap.json && git commit -m "freeze PAP"
 ```
 
 ---
@@ -90,7 +92,7 @@ sample_log.append(("1. 删除缺失主结局", len(df1)))
 df = df1.copy()
 for label, n in sample_log:
     print(f"  {label:<30s}  N = {n:>10,d}")
-with open("artifacts/sample_construction.json", "w") as f:
+with open("milestones/reproducibility/sample-construction.json", "w") as f:
     json.dump(sample_log, f, indent=2)
 
 # 五项合约
@@ -115,7 +117,7 @@ def data_contract(df, y, treatment, id_col=None, time_col=None, covariates=()):
                 c["mcar_hint"] = f"NOT MCAR (y-miss differs on {cov}, p={p:.3f}) → MI/IPW"
                 break
     assert c["n_dupes"] == 0, f"面板键重复: {c['n_dupes']} 行"
-    with open("artifacts/data_contract.json", "w") as f:
+    with open("milestones/reproducibility/data-contract.json", "w") as f:
         json.dump(c, f, indent=2, default=str)
     return c
 
@@ -403,20 +405,21 @@ stamp = {
     "python_version":   sys.version,
     "pyfixest_version": pyfixest.__version__,
     "seed": 42,
+    "resultSha256": "<完整机器结果文件 SHA256>",
     "dataset_sha256_16": dataset_sha,
     "n_obs": int(base._N),
     "estimand": "ATT",
-    "estimator": "pf.feols TWFE",
+    "estimator": "按识别设计填写：CS/SA/BJS、2SLS、rdrobust、RCT OLS、DML 等；仅同步处理 DID 可写 TWFE",
     "estimate": b_hat,
     "se_cluster": se,
     "ci95": [b_hat-1.96*se, b_hat+1.96*se],
-    "pap": "artifacts/pap.json",
-    "data_contract": "artifacts/data_contract.json",
-    "sample_log": "artifacts/sample_construction.json",
+    "pap": "milestones/reproducibility/pap.json",
+    "data_contract": "milestones/reproducibility/data-contract.json",
+    "sample_log": "milestones/reproducibility/sample-construction.json",
 }
-with open("artifacts/result.json", "w") as f:
+with open("milestones/reproducibility/empirical-manifest.json", "w") as f:
     json.dump(stamp, f, indent=2)
-print("✓ 复现印章已保存 artifacts/result.json")
+print("✓ 实证清单已保存 milestones/reproducibility/empirical-manifest.json")
 ```
 
 ---

@@ -5,7 +5,7 @@ description: 为社会科学、经济学、公共卫生等领域的实证论文�
 
 # Causal Inference — 识别策略选择与执行
 
-> **识别就是论文。** 设计残缺，写作无法补救。在写任何代码或正文前，先通过本 skill 确定策略并保存为 `artifacts/strategy.md`（提交到版本控制，时间戳即预注册）。
+> **识别就是论文。** 设计残缺，写作无法补救。在写任何代码或正文前，先通过本 skill 确定策略并保存为 `milestones/reproducibility/strategy.md`，并登记到 `empirical-manifest.json`。
 
 ---
 
@@ -15,7 +15,7 @@ description: 为社会科学、经济学、公共卫生等领域的实证论文�
 数据 + 研究问题
 │
 ├─ 处理由研究者随机分配？
-│   └─ 是 → RCT / 实地实验 → aer-preregistration (PAP first)
+│   └─ 是 → RCT / 实地实验 → computational-reproducibility (PAP first)
 │
 ├─ 有连续型断点变量 + 赋值规则？
 │   └─ RDD ——→ rdrobust (本地线性，禁用 ≥2 阶多项式)
@@ -292,7 +292,7 @@ cate = cf.effect(df[X_cols])
 
 ## 识别门禁（Gate Record）
 
-在推进到稳健性检验或写作前，必须在 `artifacts/id-gate.md` 记录：
+在推进到稳健性检验或写作前，必须在 `milestones/reproducibility/id-gate.md` 记录：
 
 ```
 策略: DID-SA / IV / RDD / SCM / DML

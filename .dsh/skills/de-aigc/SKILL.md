@@ -11,13 +11,13 @@ description: 对学术论文草稿进行 AI 写作痕迹审计与改写，降低
 
 ## 水印的三种类型（必须分开处理）
 
-2026 年有三种不同的东西都被叫做"AI 水印"，本 skill 对每种的处理方式不同，每次报告都会说明核验了哪一层：
+有三种不同的东西都被叫做"AI 水印"，本 skill 对每种的处理方式不同，每次报告都会说明核验了哪一层：
 
 | 层级 | 是什么 | 本 skill 处理方式 |
 |---|---|---|
-| **A · 字符载体** | 零宽字符、BiDi 控制符、tag 字符、软连字符等——Claude 本身**不使用**，但复制粘贴链、第三方工具常引入 | `provenance_scrub.py inspect/clean` — 确定性，CJK 安全 |
-| **B · 统计水印** | Claude（≥2026-08-02 发布的模型）和 Gemini 对词语采样有偏——无公开检测器 | **所有权改写（Ownership Pass）**——作者亲写关键段落；agent 改写仍是模型输出 |
-| **C · 容器元数据** | `.docx` 的 docProps/comments/people.xml；图片的 C2PA manifest；PDF 的 XMP | `provenance_scrub.py clean` + `exiftool`/`qpdf` |
+| **A · 字符载体** | 零宽字符、BiDi 控制符、tag 字符、软连字符等；复制粘贴链、第三方工具常引入 | 使用项目已安装的文档/PDF工具或用户提供的 provenance 清理脚本检查 |
+| **B · 统计水印** | 模型采样偏好可能留下统计信号；多数检测器不可复现 | **所有权改写（Ownership Pass）**——作者亲写关键段落；agent 改写仍是模型输出 |
+| **C · 容器元数据** | `.docx` 的 docProps/comments/people.xml；图片的 C2PA manifest；PDF 的 XMP | 使用文档导出器、`exiftool`/`qpdf` 或用户提供的清理脚本 |
 
 **规则：本 skill 永远不声称文本"无水印"。** 报告只说明 A 层和 C 层已核验，B 层标注为 unknown。
 
@@ -33,7 +33,7 @@ description: 对学术论文草稿进行 AI 写作痕迹审计与改写，降低
    Recheck   ←   Self-score  ←    Rewrite
 ```
 
-Provenance 层贯穿其中：`inspect` 在步骤 1 之前运行（字符载体会污染 n-gram 扫描），`clean` 在步骤 5 运行。
+Provenance 层贯穿其中：步骤 1 前先扫描字符载体，步骤 5 再清理容器元数据；若项目中没有对应脚本，必须标记为“未运行”，不得写成已完成。
 
 ---
 
@@ -44,18 +44,7 @@ Provenance 层贯穿其中：`inspect` 在步骤 1 之前运行（字符载体�
 2. **映射章节**：摘要 / 引言 / 文献 / 数据 / 实证策略 / 结果 / 机制 / 稳健性 / 讨论 / 结论（各章节改写强度不同，见步骤 3）
 3. **识别投稿场景**：CSSCI 中文期刊 / SSCI 英文期刊 / 学位论文（容忍第一人称和谨慎措辞的程度不同）
 4. **获取作者声音样本**（可选，效果最好）：若作者有此前的人工撰写段落，对照其句长习惯、连接词使用和谨慎措辞风格，而不是通用"人类风格"
-5. **Provenance 扫描**：`python scripts/provenance_scrub.py inspect draft.docx figures/*.png`
-
-```bash
-# 检查模式（不修改文件，exit 1 if found）
-python scripts/provenance_scrub.py inspect main.docx figures/*.png
-
-# 清理模式（写入 main.clean.docx，docProps blanked）
-python scripts/provenance_scrub.py clean main.docx --lang zh
-
-# diff 模式（显示隐藏字符的位置）
-python scripts/provenance_scrub.py clean draft.md --diff
-```
+5. **Provenance 扫描**：优先使用项目现有导出/文档工具；只有当 `scripts/provenance_scrub.py` 实际存在时，才可运行该脚本。
 
 ---
 
@@ -178,7 +167,7 @@ AI 文本的最显著特征是**句长方差极低**（几乎全部落在 20–3
 
 ```bash
 # 最终 .docx 清理
-python scripts/provenance_scrub.py clean final.docx --lang zh
+仅当项目中实际存在 `scripts/provenance_scrub.py` 时，才运行对应 inspect/clean 命令；否则在报告中写明 provenance 脚本未配置。
 # 输出: final.clean.docx（docProps 已清除）
 
 # PDF 元数据清理（报告命令，需要用户在本地执行）

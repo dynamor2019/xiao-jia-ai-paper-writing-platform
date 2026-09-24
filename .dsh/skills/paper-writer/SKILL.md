@@ -78,9 +78,9 @@ npm run paper -- "用户的论文选题" --journal "automation-in-construction"
 | 阶段 | 加载 skill | 说明 |
 |------|-----------|------|
 | 文献综述章节 | `literature-review` | PRISMA 流程 / 主题分析 / 研究空白识别 |
-| 识别策略设计（阶段 4–5） | `causal-inference` | DID / IV / RD / SCM / DML 选择与检验 |
-| PAP 冻结 + 数据清洗（阶段 4–5） | `computational-reproducibility` | 预注册、五项数据合约、样本日志 |
-| 运行实证流水线（阶段 5–8） | `empirical-analysis-pipeline` | 8 步 Python 流水线，输出 T1–T5 + F1–F4 |
+| 识别策略设计（阶段 6） | `causal-inference` | DID / IV / RD / SCM / DML 选择与检验 |
+| PAP 冻结 + 数据清洗（阶段 6–8） | `computational-reproducibility` | 预分析计划、五项数据合约、样本日志 |
+| 运行实证流水线（阶段 8–9） | `empirical-analysis-pipeline` | 8 步 Python 流水线，输出与研究设计匹配的表图清单 |
 | 实证章节写作（阶段 10–14） | `aer-paper-sections` | 五段引言公式、结果 narration discipline、系数意义转换 |
 | 定量段落措辞（阶段 8–14） | `statistical-reporting` | 识别策略报告、因果表述规范、稳健性描述 |
 | 引用逐条核验（阶段 15） | `citation-integrity` | 五步核验协议、五个检索渠道、引用台账 |
@@ -89,11 +89,11 @@ npm run paper -- "用户的论文选题" --journal "automation-in-construction"
 
 **实证论文额外门禁**（在现有 20 阶段数据门禁之上叠加）：
 
-- 阶段 4 冻结方案前，`causal-inference` 的 `artifacts/strategy.md` 须已提交版本控制。
-- 阶段 5 实验运行前，`computational-reproducibility` 的 `artifacts/pap.json` 须存在。
-- 阶段 6 三重数据验收完成后，`empirical-analysis-pipeline` 的 `artifacts/result.json` 须包含当前数据哈希。
-- 阶段 8 正文成稿前，T2（主回归多列表）和 F2（事件研究图）须已落盘且通过 `paper-quality-gate` 图表检验。
-- 实证段落中每个系数、p 值、样本量须在 `milestones/reproducibility/result-provenance.tsv` 有 VERIFIED 行，与 `empirical-analysis-pipeline` 的 `artifacts/result.json` 互锁。
+- 阶段 6 冻结方案前，识别策略、PAP、数据合约和样本日志必须写入 `milestones/reproducibility/empirical-manifest.json` 的 `evidence` 区。
+- 阶段 8 实验运行后，`empirical-manifest.json` 的 `resultSha256` 必须等于当前机器结果文件的完整 SHA256。
+- 阶段 9 三重数据验收会读取 `empirical-manifest.json`：所有必需文件必须存在且 SHA256 匹配；DID / 事件研究设计必须提供 F2，IV/RD/RCT/截面等不适用时必须用 `status: "not_applicable"` 写明原因。
+- 正文成稿前，T2（主结果表）必须落盘；其他 T/F 产物按研究设计适用性要求落盘或在清单中说明不适用。
+- 实证段落中每个系数、p 值、样本量须在 `milestones/reproducibility/result-provenance.tsv` 有 VERIFIED 行，并与 `empirical-manifest.json` 的当前结果哈希互锁。
 
 上述 skill 是质量门禁，不得用来补造缺失数据；发现证据不足时回到数据、代码或文献来源，而不是继续润色。
 

@@ -44,7 +44,7 @@ description: 为计算、仿真、AI 和工程实验论文建立可复现性清�
 
 ## 预注册与预分析计划（PAP）
 
-实验或观察研究开始**前**，将以下内容持久化为 `artifacts/pap.json` 并提交到版本控制。看到数据后修改方案须写入 amendment 并追加新版本号，不得静默覆盖。
+实验或观察研究开始**前**，将以下内容持久化为 `milestones/reproducibility/pap.json`，并在 `milestones/reproducibility/empirical-manifest.json` 的 `evidence.pap` 中登记文件 SHA256。看到数据后修改方案须写入 amendment 并追加新版本号，不得静默覆盖。
 
 ```json
 {
@@ -69,7 +69,7 @@ description: 为计算、仿真、AI 和工程实验论文建立可复现性清�
 
 ## 五项数据合约
 
-在 `artifacts/data_contract.json` 保存，任一项 FAIL 时停止流水线：
+在 `milestones/reproducibility/data-contract.json` 保存，任一项 FAIL 时停止流水线：
 
 1. **形状与键**：观测数与预期相符；面板键 (id, time) 无重复。
 2. **类型与缺失**：关键变量 dtype 正确，关键字段缺失值为零（或记录处理方式）。
@@ -79,7 +79,7 @@ description: 为计算、仿真、AI 和工程实验论文建立可复现性清�
 
 ## 样本构建日志（脚注 4 规范）
 
-每次筛选步骤打印并保存到 `artifacts/sample_construction.json`：
+每次筛选步骤打印并保存到 `milestones/reproducibility/sample-construction.json`：
 
 ```
 原始数据                     N = xxx,xxx
@@ -93,7 +93,7 @@ description: 为计算、仿真、AI 和工程实验论文建立可复现性清�
 
 ## 复现包标准（AEA / 顶刊风格）
 
-`artifacts/result.json` 须包含：Python/Stata/R 版本、随机种子、数据集 SHA256 前 16 位、样本量、估计量、聚类标准误、95% CI、预注册文件路径、数据合约路径。
+`milestones/reproducibility/empirical-manifest.json` 须包含：当前机器结果文件完整 SHA256、Python/Stata/R 版本、随机种子、数据集 SHA256 前 16 位、样本量、估计量、聚类标准误、95% CI、预分析计划文件路径、数据合约路径、样本日志路径，以及每个表图是否适用的证据记录。
 
 README 须在干净环境中可用单条命令重现所有主表和主图；不得依赖"在我的机器上能运行"的私有路径或未锁定依赖。
 

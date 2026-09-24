@@ -147,6 +147,17 @@ export class PaperPipeline {
     return [this.state.metadata.originalTopic || this.state.topic, this.researchInstructions()].filter(Boolean).join('\n\n');
   }
 
+  private isEmpiricalProject(): boolean {
+    const text = [
+      this.state.topic,
+      this.state.metadata.originalTopic,
+      this.state.metadata.researchDirection?.focus,
+      this.state.metadata.researchDirection?.method,
+      this.state.metadata.researchDirection?.constraints,
+    ].filter(Boolean).join('\n');
+    return /\b(?:did|iv|rdd?|rct|dml|causal|econometric|empirical|regression|panel|instrumental|event study)\b|因果|计量|实证|回归|面板|工具变量|双重差分|断点|随机实验/i.test(text);
+  }
+
   /** 运行完整工作流 */
   async run(): Promise<PipelineState> {
     const releaseLock = this.acquireProjectLock();
@@ -619,7 +630,9 @@ export class PaperPipeline {
   private async stageDataValidation(): Promise<void> {
     const result = await validateExperimentResults(this.state.metadata.resultsFile || '', this.milestoneDir, {
       analysisPlanFile: join(this.milestoneDir, 'analysis-plan.md'),
+      empiricalManifestFile: join(this.milestoneDir, 'reproducibility', 'empirical-manifest.json'),
       experimentLogFile: join(this.logsDir, 'experiment-run.log'),
+      requireEmpiricalManifest: this.isEmpiricalProject(),
       reproductionCheckFile: join(this.milestoneDir, 'reproducibility', 'reproduction-check.json'),
       requireExecutionEvidence: true,
       statisticalAuditFile: join(this.milestoneDir, 'reproducibility', 'statistical-audit.json'),

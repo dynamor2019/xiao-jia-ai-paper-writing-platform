@@ -2,7 +2,7 @@ import { exec } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import { getModelClient } from '../../lib/model-client.js';
@@ -10,7 +10,7 @@ import type { Paper, PaperNote, ToolResult } from '../../types.js';
 
 const execAsync = promisify(exec);
 const DEFAULT_DATA_ROOT = process.env.PAPER_DATA_ROOT || join(process.env.USERPROFILE || homedir(), 'Documents', 'XiaoJiaAI Data');
-const DEFAULT_OUTPUT_DIR = resolve(DEFAULT_DATA_ROOT, process.env.OUTPUT_DIR || 'output', 'papers', 'current');
+const DEFAULT_OUTPUT_DIR = resolve(DEFAULT_DATA_ROOT, process.env.OUTPUT_DIR || 'output', 'paper-projects', 'current');
 interface OpenAlexWork {
   id?: string;
   doi?: string;
@@ -52,7 +52,9 @@ export interface TopicDiscovery {
 
 export interface ResultValidationOptions {
   analysisPlanFile?: string;
+  empiricalManifestFile?: string;
   experimentLogFile?: string;
+  requireEmpiricalManifest?: boolean;
   reproductionCheckFile?: string;
   requireExecutionEvidence?: boolean;
   statisticalAuditFile?: string;
@@ -304,6 +306,7 @@ async function validateExecutionEvidence(path: string, sha256: string, options: 
   checks.push({ name: 'frozen-analysis-plan', passed: /^# Frozen Research Protocol/m.test(plan) && Boolean(started) && Boolean(planStats) && planStats!.mtimeMs <= Date.parse(started!), detail: 'analysis plan must exist and predate experiment execution' });
   checks.push(await validateAuditArtifact(options.statisticalAuditFile, sha256, 'scientific-statistical-audit'));
   checks.push(await validateAuditArtifact(options.reproductionCheckFile, sha256, 'independent-recomputation'));
+  checks.push(...await validateEmpiricalManifest(options.empiricalManifestFile, sha256, Boolean(options.requireEmpiricalManifest)));
   return checks;
 }
 
@@ -318,6 +321,60 @@ async function validateAuditArtifact(file: string | undefined, sha256: string, n
   } catch (error) {
     return { name, passed: false, detail: `${resolve(file)} unreadable: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+async function validateEmpiricalManifest(file: string | undefined, sha256: string, required: boolean): Promise<ValidationCheck[]> {
+  if (!file) return required ? [{ name: 'empirical-manifest', passed: false, detail: 'empirical projects require milestones/reproducibility/empirical-manifest.json' }] : [];
+  const manifestPath = resolve(file);
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+  } catch (error) {
+    return required ? [{ name: 'empirical-manifest', passed: false, detail: `${manifestPath} unreadable: ${error instanceof Error ? error.message : String(error)}` }] : [];
+  }
+
+  const baseDir = dirname(manifestPath);
+  const design = String(manifest.design || '').trim().toLowerCase();
+  const resultSha256 = String(manifest.resultSha256 || manifest.result_sha256 || '').trim();
+  const evidence = isRecord(manifest.evidence) ? manifest.evidence : {};
+  const tables = isRecord(manifest.tables) ? manifest.tables : {};
+  const figures = isRecord(manifest.figures) ? manifest.figures : {};
+  const checks: ValidationCheck[] = [
+    { name: 'empirical-result-hash', passed: resultSha256 === sha256, detail: 'empirical manifest resultSha256 must match current result file SHA256' },
+    { name: 'empirical-design', passed: Boolean(design), detail: 'empirical manifest must declare design such as did, iv, rd, rct, dml, cross-sectional, or descriptive' },
+    await validateEvidenceRef(evidence.strategy, baseDir, 'empirical-strategy', true),
+    await validateEvidenceRef(evidence.pap, baseDir, 'empirical-pap', true),
+  ];
+
+  const requiresEventStudy = /\b(?:did|event|staggered)\b/i.test(design);
+  checks.push(await validateEvidenceRef(tables.table2_main, baseDir, 'empirical-table2-main', true));
+  checks.push(await validateEvidenceRef(figures.fig2_event_study, baseDir, 'empirical-figure2-event-study', requiresEventStudy));
+  return checks;
+}
+
+async function validateEvidenceRef(value: unknown, baseDir: string, name: string, required: boolean): Promise<ValidationCheck> {
+  if (isNotApplicable(value)) {
+    const reason = String((value as Record<string, unknown>).reason || '').trim();
+    return { name, passed: !required && Boolean(reason), detail: `${name} marked not_applicable${reason ? `: ${reason}` : ' without reason'}` };
+  }
+  if (!isRecord(value)) {
+    return { name, passed: !required, detail: required ? `${name} requires { "file": "...", "sha256": "..." }` : `${name} is optional for this design` };
+  }
+  const file = String(value.file || '').trim();
+  const expectedSha = String(value.sha256 || '').trim();
+  if (!file) return { name, passed: false, detail: `${name} missing file` };
+  const path = isAbsolute(file) ? file : resolve(baseDir, file);
+  try {
+    const content = await readFile(path);
+    const actualSha = createHash('sha256').update(content).digest('hex');
+    return { name, passed: /^[a-f0-9]{64}$/i.test(expectedSha) && actualSha === expectedSha, detail: `${path} must exist and match declared SHA256` };
+  } catch (error) {
+    return { name, passed: false, detail: `${path} unreadable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+function isNotApplicable(value: unknown): boolean {
+  return isRecord(value) && String(value.status || '').toLowerCase() === 'not_applicable';
 }
 
 function formatDataValidationReport(input: { path: string; extension: string; sha256: string; parsed: ParsedResults; checks: ValidationCheck[]; checkedAt: string; passed: boolean }): string {
