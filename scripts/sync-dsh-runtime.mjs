@@ -45,7 +45,7 @@ export async function syncDshRuntime() {
 
   const profileSource = join(PROJECT_ROOT, 'config', 'dsh', 'web');
   const profileTarget = join(DSH_HOME, 'profiles', 'web');
-  for (const file of ['paper-command.js', 'academic-search.js', 'research-memory.js', 'cordis.patch.yml']) {
+  for (const file of ['paper-command.js', 'academic-search.js', 'research-memory.js', 'model-router.js', 'cordis.patch.yml']) {
     await copyRenderedRuntimeFile(join(profileSource, file), join(profileTarget, file));
   }
 

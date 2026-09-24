@@ -6,6 +6,8 @@
       name: ./academic-search.js
     - id: research-memory
       name: ./research-memory.js
+    - id: model-router
+      name: ./model-router.js
 
 # 新会话默认使用论文专用 preset；旧会话保留创建时的 preset。
 - id: agent-presets

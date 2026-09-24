@@ -153,7 +153,7 @@ ANTHROPIC_MODEL=claude-opus-5
 
 也可以启动后在项目设置里填写 API Key 和接口地址；这种方式更直观，但需要用户理解不同服务商的 API Key、Base URL、模型名和路由设置。为降低配置门槛，本项目按中转站调用习惯整理了 OpenAI-compatible 与 Anthropic-compatible 配置，方便接入 GPT、Claude 等主流闭源大模型。
 
-论文流水线启动时会读取 Web「模型」设置中的 `rayinai`、`rayinai-claude` 凭据与接口地址；若 `.env` 已填写对应 API Key，则优先使用 `.env`。各写作阶段的模型仍由 `.env` 中的 `ROUTE_*` 配置控制，实际路由见运行日志。
+论文流水线启动时会读取 Web「模型」设置中的 `rayinai`、`rayinai-claude` 凭据与接口地址；若 `.env` 已填写对应 API Key，则优先使用 `.env`。各写作阶段的模型由 `.env` 中的 `ROUTE_*` 配置控制，实际路由见运行日志。Web 普通对话也按任务类型读取同一套 `ROUTE_*` 规则；在 Web 界面手动选定模型后，优先使用手动选择。
 
 > 正文流水线仅使用 OpenAI 与 Claude 路由；Web 搜索使用 OpenAlex，不再调用 DeepSeek provider。请妥善保管 API Key，不要把填写了真实 Key 的 `.env` 上传到 GitHub。
 
