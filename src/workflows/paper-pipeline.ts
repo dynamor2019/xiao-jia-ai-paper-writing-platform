@@ -28,7 +28,7 @@ import type { PipelineState, PipelineStage, Paper, PaperNote, Outline, Section }
 import { arxivSearch } from '../plugins/literature/arxiv-search.js';
 import { parseDocument } from '../plugins/literature/pdf-parser.js';
 import { batchSummarizePapers } from '../plugins/literature/paper-summarizer.js';
-import { createResearchProtocol, discoverResearchTopic, runExperiment, searchScholarlyWorks, validateExperimentResults } from '../plugins/research/research-lifecycle.js';
+import { createResearchProtocol, discoverResearchTopic, runExperiment, searchScholarlyWorks, validateEmpiricalManifest, validateExperimentResults } from '../plugins/research/research-lifecycle.js';
 import { generateOutline, flattenOutline } from '../plugins/writing/outline-generator.js';
 import { writeSectionParagraph } from '../plugins/writing/section-writer.js';
 import { checkCoherence } from '../plugins/writing/coherence-checker.js';
@@ -148,12 +148,19 @@ export class PaperPipeline {
   }
 
   private isEmpiricalProject(): boolean {
+    const discoveryPath = join(this.stateDir, 'topic-discovery.json');
+    let selectedMethod = '';
+    if (existsSync(discoveryPath)) {
+      const discovery = JSON.parse(readFileSync(discoveryPath, 'utf8')) as { selected?: { method?: string } };
+      selectedMethod = discovery.selected?.method || '';
+    }
     const text = [
       this.state.topic,
       this.state.metadata.originalTopic,
       this.state.metadata.researchDirection?.focus,
       this.state.metadata.researchDirection?.method,
       this.state.metadata.researchDirection?.constraints,
+      selectedMethod,
     ].filter(Boolean).join('\n');
     return /\b(?:did|iv|rdd?|rct|dml|causal|econometric|empirical|regression|panel|instrumental|event study)\b|因果|计量|实证|回归|面板|工具变量|双重差分|断点|随机实验/i.test(text);
   }
@@ -602,11 +609,21 @@ export class PaperPipeline {
     if (!resultsFile || !existsSync(resolve(resultsFile))) throw new Error('缺少实验结果，禁止开始论文行文');
     const validationPath = join(this.milestoneDir, 'data-validation.json');
     if (!existsSync(validationPath)) throw new Error('缺少机器可读数据验收报告，禁止开始论文行文');
-    const validation = JSON.parse(await readFile(validationPath, 'utf8')) as { status?: string; sha256?: string };
+    const validation = JSON.parse(await readFile(validationPath, 'utf8')) as { status?: string; sha256?: string; empiricalManifestSha256?: string };
     const content = await readFile(resolve(resultsFile), 'utf8');
     const currentHash = createHash('sha256').update(content).digest('hex');
     if (validation.status !== 'PASS' || validation.sha256 !== currentHash) {
       throw new Error('实验结果在验收后发生变化或验收未通过；必须重新执行全部数据门禁后才能行文');
+    }
+    const manifestPath = join(this.milestoneDir, 'reproducibility', 'empirical-manifest.json');
+    const manifestBytes = await readFile(manifestPath).catch(() => undefined);
+    const manifestHash = manifestBytes ? createHash('sha256').update(manifestBytes).digest('hex') : undefined;
+    if (manifestHash !== validation.empiricalManifestSha256 || (this.isEmpiricalProject() && !manifestHash)) {
+      throw new Error('实证清单在数据验收后发生变化或缺失；必须重新执行数据验收后才能行文');
+    }
+    const empiricalChecks = await validateEmpiricalManifest(manifestPath, currentHash, this.isEmpiricalProject());
+    if (empiricalChecks.some((check) => !check.passed)) {
+      throw new Error(`实证证据在数据验收后发生变化：${empiricalChecks.filter((check) => !check.passed).map((check) => check.name).join(', ')}`);
     }
     const provenancePath = join(this.milestoneDir, 'reproducibility', 'result-provenance.tsv');
     if (!existsSync(provenancePath)) throw new Error('缺少 result-provenance.tsv，禁止开始论文行文');

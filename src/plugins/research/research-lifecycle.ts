@@ -204,6 +204,9 @@ export async function validateExperimentResults(
     const sha256 = createHash('sha256').update(content).digest('hex');
     const checks = validateParsedResults(parsed);
     checks.push(...await validateExecutionEvidence(path, sha256, options));
+    const empiricalManifestSha256 = options.empiricalManifestFile
+      ? await readFile(resolve(options.empiricalManifestFile)).then((bytes) => createHash('sha256').update(bytes).digest('hex')).catch(() => undefined)
+      : undefined;
     const secondRead = await readFile(path, 'utf8');
     checks.push({
       name: 'repeat-read-fingerprint',
@@ -215,7 +218,7 @@ export async function validateExperimentResults(
     const report = formatDataValidationReport({ path, extension, sha256, parsed, checks, checkedAt, passed });
     await mkdir(outputDir, { recursive: true });
     await writeFile(reportPath, report, 'utf8');
-    await writeFile(jsonPath, JSON.stringify({ status: passed ? 'PASS' : 'BLOCKED', checkedAt, resultsFile: path, sha256, rows: parsed.rows.length, columns: parsed.headers, checks }, null, 2), 'utf8');
+    await writeFile(jsonPath, JSON.stringify({ status: passed ? 'PASS' : 'BLOCKED', checkedAt, resultsFile: path, sha256, empiricalManifestSha256, rows: parsed.rows.length, columns: parsed.headers, checks }, null, 2), 'utf8');
     await appendFile(resolve(outputDir, 'data-validation-history.tsv'), `${checkedAt}\t${sha256}\t${passed ? 'PASS' : 'BLOCKED'}\t${checks.filter((check) => !check.passed).map((check) => check.name).join(',')}\n`, 'utf8');
     if (!passed) throw new Error(`数据完整性检查未通过: ${checks.filter((check) => !check.passed).map((check) => check.name).join(', ')}`);
     return { success: true, data: reportPath };
@@ -323,7 +326,7 @@ async function validateAuditArtifact(file: string | undefined, sha256: string, n
   }
 }
 
-async function validateEmpiricalManifest(file: string | undefined, sha256: string, required: boolean): Promise<ValidationCheck[]> {
+export async function validateEmpiricalManifest(file: string | undefined, sha256: string, required: boolean): Promise<ValidationCheck[]> {
   if (!file) return required ? [{ name: 'empirical-manifest', passed: false, detail: 'empirical projects require milestones/reproducibility/empirical-manifest.json' }] : [];
   const manifestPath = resolve(file);
   let manifest: Record<string, unknown>;
@@ -346,7 +349,7 @@ async function validateEmpiricalManifest(file: string | undefined, sha256: strin
     await validateEvidenceRef(evidence.pap, baseDir, 'empirical-pap', true),
   ];
 
-  const requiresEventStudy = /\b(?:did|event|staggered)\b/i.test(design);
+  const requiresEventStudy = /\b(?:did|event|staggered)\b|双重差分|事件研究|交错/i.test(design);
   checks.push(await validateEvidenceRef(tables.table2_main, baseDir, 'empirical-table2-main', true));
   checks.push(await validateEvidenceRef(figures.fig2_event_study, baseDir, 'empirical-figure2-event-study', requiresEventStudy));
   return checks;

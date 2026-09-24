@@ -393,7 +393,23 @@ print(f"异质性 Wald 统计量={wald:.2f}, p={1-chi2.cdf(wald,1):.3f}")
 ## Step 8 — 复现印章
 
 ```python
-import hashlib, sys, pyfixest, json
+import hashlib, json, os, re, sys
+from pathlib import Path
+import pyfixest
+
+manifest_dir = Path("milestones/reproducibility")
+manifest_dir.mkdir(parents=True, exist_ok=True)
+result_file = Path("<机器结果文件>.csv")  # 改为本次实验实际产出的 CSV/JSON/TSV
+design = pap["design"]
+
+def evidence_ref(path):
+    path = Path(path)
+    return {
+        "file": os.path.relpath(path, manifest_dir),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+event_study = bool(re.search(r"\b(?:did|event|staggered)\b|双重差分|事件研究|交错", design, re.I))
 
 b_hat = float(base.coef()["treat"])
 se    = float(base.se()["treat"])
@@ -405,7 +421,8 @@ stamp = {
     "python_version":   sys.version,
     "pyfixest_version": pyfixest.__version__,
     "seed": 42,
-    "resultSha256": "<完整机器结果文件 SHA256>",
+    "design": design,
+    "resultSha256": hashlib.sha256(result_file.read_bytes()).hexdigest(),
     "dataset_sha256_16": dataset_sha,
     "n_obs": int(base._N),
     "estimand": "ATT",
@@ -416,6 +433,15 @@ stamp = {
     "pap": "milestones/reproducibility/pap.json",
     "data_contract": "milestones/reproducibility/data-contract.json",
     "sample_log": "milestones/reproducibility/sample-construction.json",
+    "evidence": {
+        "strategy": evidence_ref(manifest_dir / "strategy.md"),
+        "pap": evidence_ref(manifest_dir / "pap.json"),
+    },
+    "tables": {"table2_main": evidence_ref("tables/table2_main.xlsx")},
+    "figures": {"fig2_event_study": (
+        evidence_ref("figures/fig2_event_study.png") if event_study else
+        {"status": "not_applicable", "reason": "此设计没有处理时间维度"}
+    )},
 }
 with open("milestones/reproducibility/empirical-manifest.json", "w") as f:
     json.dump(stamp, f, indent=2)

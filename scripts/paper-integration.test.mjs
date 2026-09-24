@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,53 @@ import { resolvePaperModelEnv } from './paper-model-env.mjs';
 
 test('workbench stages match the pipeline contract', () => {
   assert.deepEqual(WORKBENCH_STAGE_LABELS.map(([id]) => id), PIPELINE_STAGES);
+});
+
+test('selected DID method requires empirical evidence and blocks changed evidence before writing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-empirical-gate-'));
+  try {
+    const stateDir = join(root, '.dsh-state');
+    const milestoneDir = join(root, 'milestones');
+    const reproducibilityDir = join(milestoneDir, 'reproducibility');
+    await mkdir(stateDir, { recursive: true });
+    await mkdir(reproducibilityDir, { recursive: true });
+    await writeFile(join(stateDir, 'topic-discovery.json'), JSON.stringify({ selected: { method: 'staggered DID' } }));
+    const results = join(root, 'results.csv');
+    const resultContent = 'run_id,score\n1,0.5\n2,0.7\n3,0.9\n';
+    await writeFile(results, resultContent);
+    const resultSha256 = createHash('sha256').update(resultContent).digest('hex');
+    const evidenceRef = async (name, content) => {
+      await writeFile(join(reproducibilityDir, name), content);
+      return { file: name, sha256: createHash('sha256').update(content).digest('hex') };
+    };
+    const strategy = await evidenceRef('strategy.md', '# Identification strategy\n');
+    const pap = await evidenceRef('pap.json', '{"design":"did"}\n');
+    const table = await evidenceRef('table2.csv', 'model,estimate\nm1,0.5\n');
+    const figure = await evidenceRef('figure2.txt', 'event-study evidence');
+    const manifest = join(reproducibilityDir, 'empirical-manifest.json');
+    const manifestContent = JSON.stringify({
+      design: 'did', resultSha256,
+      evidence: { strategy, pap },
+      tables: { table2_main: table },
+      figures: { fig2_event_study: figure },
+    });
+    await writeFile(manifest, manifestContent);
+    await writeFile(join(milestoneDir, 'data-validation.json'), JSON.stringify({
+      status: 'PASS', sha256: resultSha256,
+      empiricalManifestSha256: createHash('sha256').update(manifestContent).digest('hex'),
+    }));
+    await writeFile(join(reproducibilityDir, 'result-provenance.tsv'), 'claim\tstatus\nC1\tVERIFIED\n');
+    const pipeline = new PaperPipeline('Housing prices', undefined, { outputDir: root, resultsFile: results });
+    assert.equal(pipeline.isEmpiricalProject(), true);
+    assert.match(await pipeline.loadValidatedResultEvidence(), /run_id,score/);
+    await writeFile(join(reproducibilityDir, 'strategy.md'), '# Changed strategy\n');
+    await assert.rejects(pipeline.loadValidatedResultEvidence(), /empirical-strategy/);
+    await writeFile(join(reproducibilityDir, 'strategy.md'), '# Identification strategy\n');
+    await writeFile(manifest, `${manifestContent}\n`);
+    await assert.rejects(pipeline.loadValidatedResultEvidence(), /实证清单在数据验收后发生变化/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('paper inputs stay in their own project directories', async () => {

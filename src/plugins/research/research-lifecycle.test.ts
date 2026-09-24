@@ -134,7 +134,7 @@ test('requires design-specific empirical manifest evidence', async () => {
     await writeEvidence(pap, '{"design":"did"}\n');
     await writeEvidence(table2, 'model,estimate\nm1,0.5\n');
     await writeFile(manifest, JSON.stringify({
-      design: 'did',
+      design: '双重差分',
       resultSha256: sha256,
       evidence: {
         strategy: await evidenceRef(strategy),
@@ -219,6 +219,8 @@ test('allows documented not-applicable empirical exhibits for non-DID designs', 
       statisticalAuditFile: statisticalAudit,
     });
     assert.equal(validation.success, true);
+    const report = JSON.parse(await readFile(join(directory, 'data-validation.json'), 'utf8')) as { empiricalManifestSha256?: string };
+    assert.equal(report.empiricalManifestSha256, createHash('sha256').update(await readFile(manifest)).digest('hex'));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
