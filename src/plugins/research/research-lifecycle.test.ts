@@ -5,7 +5,78 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { searchScholarlyWorks, validateExperimentResults } from './research-lifecycle.js';
+import { getModelClient } from '../../lib/model-client.js';
+import { discoverResearchTopic, searchScholarlyWorks, validateExperimentResults } from './research-lifecycle.js';
+
+test('discovery uses both disciplines, records boundaries, and never inserts a fixed topic', async () => {
+  const outputDir = await mkdtemp(join(tmpdir(), 'dsh-topic-discovery-'));
+  const originalFetch = globalThis.fetch;
+  const client = getModelClient();
+  const originalGenerate = client.generate;
+  const queries: string[] = [];
+  let modelCalls = 0;
+  const targetIds = ['target-1', 'target-2', 'target-3', 'target-4', 'target-5'];
+  const sourceIds = ['source-1', 'source-2', 'source-3'];
+  const selected = {
+    title: 'A bounded transfer for soil research', researchQuestion: 'Does method transfer improve soil measurement?',
+    novelty: 'Incremental cross-field adaptation hypothesis', method: 'Compare against current practice',
+    requiredData: 'Public soil measurements', feasibility: 'Benchmark exists', risks: ['Domain shift'],
+    sourceIds: [...targetIds.slice(0, 2), ...sourceIds.slice(0, 2)], baseline: 'Current soil method',
+    falsification: 'No improvement on held-out samples', dataAccess: 'Public benchmark repository',
+    transfer: {
+      homeDiscipline: 'Soil science', sourceDiscipline: 'Signal processing', borrowedMethod: 'Spectral decomposition',
+      targetProblem: 'Soil measurement', transferMechanism: 'Spectra may expose soil composition patterns',
+      assumptions: ['Comparable signal quality'], boundaries: ['Measured soil samples only'],
+      failureConditions: ['Signal drift'], validationPlan: 'Compare on held-out soil samples',
+      targetIds: targetIds.slice(0, 2), sourceIds: sourceIds.slice(0, 2),
+    },
+    evidenceClaims: [
+      { role: 'target-need', claim: 'Soil measurement needs evaluation', sourceIds: ['target-1'], limitation: 'Abstract only' },
+      { role: 'source-method', claim: 'Spectral decomposition is used', sourceIds: ['source-1'], limitation: 'Transfer untested' },
+      { role: 'gap', claim: 'Transfer may be underexplored', sourceIds: ['target-2'], limitation: 'Search not exhaustive' },
+    ],
+  };
+  client.generate = async () => {
+    modelCalls += 1;
+    if (modelCalls === 1) return JSON.stringify({ homeDiscipline: 'Soil science', homeSearchQuery: 'soil measurement', sourceDiscipline: 'Signal processing', transferSearchQuery: 'spectral decomposition' });
+    if (modelCalls === 2) return JSON.stringify({ selected });
+    return JSON.stringify({ approved: true, checks: { homeDisciplineFit: true, crossDisciplineMechanism: true, evidenceAndGap: true, feasibilityAndData: true, falsifiabilityAndBoundaries: true }, issues: [], limitations: ['Read full texts and confirm data access'] });
+  };
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    queries.push(url.searchParams.get('search') || url.searchParams.get('query') || '');
+    if (url.hostname === 'api.crossref.org') return Response.json({ message: { items: [] } });
+    const ids = url.searchParams.get('search')?.includes('soil') ? targetIds : sourceIds;
+    return Response.json({ results: ids.map((id) => ({ id, display_name: id, publication_year: 2025, abstract_inverted_index: { Evidence: [0], exists: [1] } })) });
+  };
+  try {
+    const result = await discoverResearchTopic('土壤测量', '', outputDir);
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.data?.selected.title, selected.title);
+    assert.equal(modelCalls, 3);
+    assert.ok(queries.every((query) => !/data center|liquid cooling|optical fiber/i.test(query)));
+    const report = await readFile(join(outputDir, 'topic-discovery.md'), 'utf8');
+    assert.match(report, /适用边界/);
+    assert.match(report, /NSF 跨学科评审准则/);
+  } finally {
+    client.generate = originalGenerate;
+    globalThis.fetch = originalFetch;
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test('discovery fails closed when the model is unavailable', async () => {
+  const client = getModelClient();
+  const originalGenerate = client.generate;
+  client.generate = async () => { throw new Error('model unavailable'); };
+  try {
+    const result = await discoverResearchTopic('unrelated field', '');
+    assert.equal(result.success, false);
+    assert.match(result.error || '', /model unavailable/);
+  } finally {
+    client.generate = originalGenerate;
+  }
+});
 
 test('uses Crossref when OpenAlex returns no works', async () => {
   const originalFetch = globalThis.fetch;

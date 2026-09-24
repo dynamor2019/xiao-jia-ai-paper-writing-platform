@@ -610,6 +610,7 @@ async function workbenchText(ctx, invocation) {
     '科技论文工作台',
     `项目: ${snapshot.topic}`,
     `推荐研究问题: ${snapshot.recommendedTopic || '尚未生成'}`,
+    snapshot.recommendedTopic ? `选题依据与适用边界: ${join(snapshot.outputDir, 'milestones', 'topic-discovery.md')}` : '选题依据与适用边界: 尚未生成',
     `目标期刊: ${snapshot.journalName}`,
     statusText(ctx, invocation),
     '',
@@ -620,7 +621,7 @@ async function workbenchText(ctx, invocation) {
     `质量门禁: ${snapshot.quality}`,
     snapshot.latestReport ? `最新报告: ${snapshot.latestReport}` : '最新报告: 尚未生成',
     '',
-    snapshot.runStatus === 'awaiting-confirmation' ? '请使用 /paper-confirm 确认推荐研究问题，随后全部阶段将自动执行。' : '工作台和 /paper 命令读取同一流水线状态。',
+    snapshot.runStatus === 'awaiting-confirmation' ? '请先核对选题报告中的关键文献、迁移边界和数据取得路径，再使用 /paper-confirm 继续。' : '工作台和 /paper 命令读取同一流水线状态。',
   ].join('\n');
 }
 
@@ -806,6 +807,17 @@ function apply(ctx) {
       if (activeProjectPid(run.outputDir)) return { kind: 'error', text: '论文项目仍在运行，请等待完成后再确认。' };
       const pipeline = readPipelineState(run.outputDir);
       if (!pipeline?.topic) return { kind: 'error', text: '没有找到联网选题结果，无法确认。' };
+      let discovery;
+      try {
+        discovery = JSON.parse(readFileSync(join(run.outputDir, '.dsh-state', 'topic-discovery.json'), 'utf8'));
+      } catch {
+        return { kind: 'error', text: '缺少选题证据与独立复核记录，不能确认。' };
+      }
+      if (discovery.selected?.title !== pipeline.topic || !discovery.review?.approved
+        || Object.values(discovery.review.checks || {}).length !== 5
+        || Object.values(discovery.review.checks).some((value) => value !== true)) {
+        return { kind: 'error', text: '选题科学性复核尚未通过，请检查选题报告并重新选题。' };
+      }
       startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, run.outputDir, invocation.agent, 'auto', run.researchDirection);
       return { kind: 'success', text: [`已确认最终研究问题: ${pipeline.topic}`, `论文目录: ${run.outputDir}`, '', '同一流水线已从断点继续；后续文献、方案、数据集、程序实验、写作、两轮评审、格式和投稿包将自动执行。'].join('\n') };
     },

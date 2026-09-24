@@ -196,6 +196,31 @@ test('a CLI project can be attached to a Web session', async () => {
   }
 });
 
+test('Web confirmation rejects an unreviewed topic', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-topic-confirm-'));
+  const previousRoot = process.env.PAPER_DATA_ROOT;
+  try {
+    process.env.PAPER_DATA_ROOT = root;
+    const projectDir = join(root, 'output', 'paper-projects', 'paper-review-test');
+    const stateDir = join(projectDir, '.dsh-state');
+    const runDir = join(root, '.dsh-state', 'paper-runs');
+    await mkdir(stateDir, { recursive: true });
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(stateDir, 'paper-pipeline-state.json'), JSON.stringify({ topic: 'Proposed topic', stage: 'topic-confirmation' }));
+    await writeFile(join(runDir, 'review-session.json'), JSON.stringify({ outputDir: projectDir, topic: 'Broad topic', status: 'awaiting-confirmation', stage: 'topic-confirmation' }));
+    const { apply } = await import(`../config/dsh/web/paper-command.js?review=${Date.now()}`);
+    const commands = new Map();
+    apply({ commands: { register: (command) => commands.set(command.name, command) }, goals: { get: () => undefined }, systemPrompt: { context: () => {} }, effect: () => {} });
+    const result = await commands.get('paper-confirm').handler({ agent: { id: 'review-session' } });
+    assert.equal(result.kind, 'error');
+    assert.match(result.text, /复核记录/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.PAPER_DATA_ROOT;
+    else process.env.PAPER_DATA_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('a running CLI project stays running when attached to Web', async () => {
   const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-active-'));
   const previousRoot = process.env.PAPER_DATA_ROOT;

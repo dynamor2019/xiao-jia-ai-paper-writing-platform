@@ -29,6 +29,7 @@ import { arxivSearch } from '../plugins/literature/arxiv-search.js';
 import { parseDocument } from '../plugins/literature/pdf-parser.js';
 import { batchSummarizePapers } from '../plugins/literature/paper-summarizer.js';
 import { createResearchProtocol, discoverResearchTopic, runExperiment, searchScholarlyWorks, validateEmpiricalManifest, validateExperimentResults } from '../plugins/research/research-lifecycle.js';
+import { validateTopicReview, type TopicReview } from '../plugins/research/topic-evaluation.js';
 import { generateOutline, flattenOutline } from '../plugins/writing/outline-generator.js';
 import { writeSectionParagraph } from '../plugins/writing/section-writer.js';
 import { checkCoherence } from '../plugins/writing/coherence-checker.js';
@@ -364,6 +365,11 @@ export class PaperPipeline {
 
   // ===== 阶段 1: 选题确认 =====
   private async stageTopicConfirmation(): Promise<void> {
+    const discoveryPath = join(this.stateDir, 'topic-discovery.json');
+    if (!existsSync(discoveryPath)) throw new Error('缺少选题证据与独立复核记录，不能继续论文流程');
+    const discovery = JSON.parse(readFileSync(discoveryPath, 'utf8')) as { selected?: { title?: string }; review?: TopicReview };
+    if (discovery.selected?.title !== this.state.topic || !discovery.review) throw new Error('选题与复核记录不一致，不能继续论文流程');
+    validateTopicReview(discovery.review);
     console.log(`选题: ${this.state.topic}`);
     console.log('请确认选题是否合适（审批节点）');
     // 实际审批由 onApproval 回调处理
@@ -1080,7 +1086,7 @@ async function main() {
   let outputDir: string | undefined;
   let paperProjectId: string | undefined;
   const researchDirection: NonNullable<PipelineState['metadata']['researchDirection']> = {};
-  let approvalMode: 'auto' | 'topic' = 'auto';
+  let approvalMode: 'auto' | 'topic' = 'topic';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--input-dir' && args[i + 1]) {

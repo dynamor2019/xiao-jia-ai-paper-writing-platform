@@ -31,7 +31,7 @@
     "paper:cli": "node scripts/paper-cli.mjs",
     "paper:validate": "tsx src/workflows/validate-paper.ts",
     "model:health": "npm run build --silent && node scripts/model-health-check.mjs",
-    "test": "tsx --test src/plugins/verification/paper-quality-validator.test.ts src/plugins/research/research-lifecycle.test.ts src/lib/model-client.test.ts scripts/paper-integration.test.mjs"
+    "test": "tsx --test src/plugins/verification/paper-quality-validator.test.ts src/plugins/research/research-lifecycle.test.ts src/plugins/research/topic-evaluation.test.ts src/lib/model-client.test.ts scripts/paper-integration.test.mjs"
   },
   "keywords": [
     "dsh",
