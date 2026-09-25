@@ -7,8 +7,9 @@ import test from 'node:test';
 
 import { WORKBENCH_STAGE_LABELS, prepareProjectInput, validateApprovalStage } from '../config/dsh/web/paper-command.js';
 import { classifyWebTask, installWebModelRouter } from '../config/dsh/web/model-router.js';
+import { buildMarkdown } from '../src/plugins/export/docx-exporter.ts';
 import { verifyCitations } from '../src/plugins/verification/citation-verifier.ts';
-import { PaperPipeline, PIPELINE_STAGES } from '../src/workflows/paper-pipeline.ts';
+import { PaperPipeline, PIPELINE_STAGES, refreshCitationContexts } from '../src/workflows/paper-pipeline.ts';
 import { resolvePaperModelEnv } from './paper-model-env.mjs';
 
 test('workbench stages match the pipeline contract', () => {
@@ -190,6 +191,47 @@ test('citation verification fails closed and preserves every citation', async ()
     globalThis.fetch = originalFetch;
     restoreSavedEnv(saved);
   }
+});
+
+test('final citation binding rejects untracked markers and refreshes citation sentences', () => {
+  const refreshed = refreshCitationContexts([{
+    id: 's1',
+    nodeId: '1',
+    title: 'Evidence',
+    content: '旧句子被改掉。新的终稿主张由文献支持 [3]。',
+    citations: [{ paperId: 'p3', marker: '[3]', verified: true, rawText: '旧句子 [3]。' }],
+    wordCount: 12,
+    status: 'completed',
+  }]);
+  assert.equal(refreshed[0].citations[0].verified, false);
+  assert.equal(refreshed[0].citations[0].rawText, '新的终稿主张由文献支持 [3]。');
+  assert.throws(() => refreshCitationContexts([{
+    ...refreshed[0],
+    content: '新的终稿主张由文献支持 [3]。额外引用 [9]。',
+  }]), /未绑定文献库/);
+});
+
+test('docx markdown export renumbers body citations to match the bibliography', () => {
+  const papers = [
+    { id: 'p1', title: 'Unused', authors: ['A'], year: 2020, abstract: '', source: 'manual' },
+    { id: 'p2', title: 'Used Second', authors: ['B'], year: 2021, abstract: '', source: 'manual' },
+    { id: 'p3', title: 'Used Third', authors: ['C'], year: 2022, abstract: '', source: 'manual' },
+  ];
+  const markdown = buildMarkdown([{
+    id: 's1',
+    nodeId: '1',
+    title: 'Evidence',
+    content: 'First claim [3]. Second claim [2].',
+    citations: [
+      { paperId: 'p3', marker: '[3]', verified: true, rawText: 'First claim [3].' },
+      { paperId: 'p2', marker: '[2]', verified: true, rawText: 'Second claim [2].' },
+    ],
+    wordCount: 6,
+    status: 'completed',
+  }], papers, { title: 'T' });
+  assert.match(markdown, /First claim \[2\]\. Second claim \[1\]\./);
+  assert.match(markdown, /\[1\] B\. Used Second\[J\]\. 2021\./);
+  assert.match(markdown, /\[2\] C\. Used Third\[J\]\. 2022\./);
 });
 
 test('approval validator accepts generated review artifacts only when present', async () => {

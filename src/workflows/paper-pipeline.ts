@@ -879,6 +879,7 @@ export class PaperPipeline {
       this.outputPath('analysis-plan.md'),
       this.outputPath('data-validation.md'),
       this.outputPath('citation-verification-report.md'),
+      this.outputPath('final-citation-verification-report.md'),
       this.outputPath('paper-quality-report.md'),
       this.outputPath('scientific-review.md'),
       this.outputPath('docx-quality-report.md'),
@@ -886,7 +887,7 @@ export class PaperPipeline {
       this.outputPath('cover-letter.md'),
     ];
     const missing = required.filter((path) => !existsSync(path));
-    const checklist = `# Submission Readiness\n\n- [x] 联网选题与方向证据\n- [x] 跨学科迁移边界已传递到方案、大纲、正文和质量审查\n- [x] 冻结研究方案\n- [x] 实验数据验收\n- [x] 引用核验\n- [x] 独立科技质量审查\n- [${missing.includes(this.outputPath('research-integrity.md')) ? ' ' : 'x'}] 作者、基金、伦理、利益冲突及 AI 使用声明模板\n- [${missing.includes(this.outputPath('cover-letter.md')) ? ' ' : 'x'}] Cover letter 模板\n- [ ] 作者逐项确认声明、作者顺序、基金、伦理、利益冲突和目标期刊当天要求\n\nStatus: ${missing.length > 0 ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}\n`;
+    const checklist = `# Submission Readiness\n\n- [x] 联网选题与方向证据\n- [x] 跨学科迁移边界已传递到方案、大纲、正文和质量审查\n- [x] 冻结研究方案\n- [x] 实验数据验收\n- [x] 引用核验\n- [x] 终稿引用重新绑定与核验\n- [x] 独立科技质量审查\n- [${missing.includes(this.outputPath('research-integrity.md')) ? ' ' : 'x'}] 作者、基金、伦理、利益冲突及 AI 使用声明模板\n- [${missing.includes(this.outputPath('cover-letter.md')) ? ' ' : 'x'}] Cover letter 模板\n- [ ] 作者逐项确认声明、作者顺序、基金、伦理、利益冲突和目标期刊当天要求\n\nStatus: ${missing.length > 0 ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}\n`;
     await writeFile(this.outputPath('submission-manifest.md'), checklist, 'utf8');
     if (missing.length > 0) throw new Error(`投稿前仍缺少产物: ${missing.join(', ')}`);
     console.log('投稿清单已生成；作者声明和实时期刊要求仍需人工确认。');
@@ -917,6 +918,7 @@ export class PaperPipeline {
   // ===== 阶段 10: 输出交付 =====
   private async stageExport(): Promise<void> {
     console.log('正在导出论文...');
+    await this.refreshFinalCitationEvidence();
 
     const title = this.state.topic;
 
@@ -959,6 +961,31 @@ export class PaperPipeline {
     const mdContent = this.state.sections.map((s) => `## ${s.title}\n\n${s.content}`).join('\n\n');
     await writeFile(this.outputPath('paper-full.md'), mdContent, 'utf-8');
     console.log(`完整 Markdown: ${this.outputPath('paper-full.md')}`);
+  }
+
+  private async refreshFinalCitationEvidence(): Promise<void> {
+    this.state.sections = refreshCitationContexts(this.state.sections);
+    this.saveState();
+    const result = await verifyCitations(this.state.sections, this.state.papers, this.state.notes);
+    if (!result.success || !result.data) throw new Error(`终稿引用核验失败: ${result.error}`);
+    const problems = result.data.filter((item) => item.status !== 'verified');
+    const recencyAudit = this.citationRecencyAudit();
+    const report = [
+      generateVerificationReport(result.data),
+      recencyAudit.report,
+      '## Final Draft Citation Binding',
+      '',
+      '- Status: PASS',
+      '- Scope: exported manuscript after polishing and cross-model revision.',
+      '',
+    ].join('\n');
+    await writeFile(this.outputPath('final-citation-verification-report.md'), report, 'utf-8');
+    if (problems.length > 0) {
+      throw new Error(`终稿引用核验未通过；查看 ${this.outputPath('final-citation-verification-report.md')}`);
+    }
+    if (!recencyAudit.passed) {
+      throw new Error(`终稿引用时效性门禁未通过；查看 ${this.outputPath('final-citation-verification-report.md')}`);
+    }
   }
 
   // ===== 状态持久化 =====
@@ -1086,6 +1113,43 @@ function createReviewSection(title: string, content: string, index: number): Sec
     wordCount: content.split(/\s+/).filter(Boolean).length,
     status: 'needs-review',
   };
+}
+
+export function refreshCitationContexts(sections: Section[]): Section[] {
+  return sections.map((section) => {
+    const refreshed = section.citations.map((citation) => {
+      const sentence = findCitationSentence(section.content, citation.marker);
+      if (!sentence) {
+        throw new Error(`终稿章节「${section.title}」缺少引用标记 ${citation.marker}，不能导出投稿稿`);
+      }
+      return {
+        ...citation,
+        rawText: sentence,
+        verified: false,
+      };
+    });
+    const knownMarkers = new Set(refreshed.map((citation) => citation.marker));
+    const unboundMarkers = [...section.content.matchAll(/\[(\d+)\]/g)]
+      .map((match) => match[0])
+      .filter((marker) => !knownMarkers.has(marker));
+    if (unboundMarkers.length > 0) {
+      throw new Error(`终稿章节「${section.title}」存在未绑定文献库的引用标记: ${[...new Set(unboundMarkers)].join(', ')}`);
+    }
+    return { ...section, citations: refreshed };
+  });
+}
+
+function findCitationSentence(content: string, marker: string): string | undefined {
+  const markerIndex = content.indexOf(marker);
+  if (markerIndex < 0) return undefined;
+  const before = content.slice(0, markerIndex);
+  const after = content.slice(markerIndex + marker.length);
+  const start = Math.max(before.lastIndexOf('。'), before.lastIndexOf('.'), before.lastIndexOf('\n'));
+  const endCandidates = ['。', '.', '\n']
+    .map((token) => after.indexOf(token))
+    .filter((index) => index >= 0);
+  const end = endCandidates.length > 0 ? Math.min(...endCandidates) + markerIndex + marker.length + 1 : content.length;
+  return content.slice(start + 1, end).trim();
 }
 
 function safeFileBase(name: string): string {

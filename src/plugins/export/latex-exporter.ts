@@ -97,6 +97,7 @@ function buildLatex(
   }
 
   // 正文
+  const citationKeys = buildCitationKeyMap(papers, sections);
   for (const section of sections) {
     const level = section.nodeId.split('.').length;
     if (level === 1) {
@@ -106,7 +107,7 @@ function buildLatex(
     } else {
       tex += `\\subsubsection{${escapeLatex(section.title)}}\n\n`;
     }
-    tex += `${escapeLatex(section.content)}\n\n`;
+    tex += `${renderLatexSectionContent(section, citationKeys)}\n\n`;
   }
 
   // 参考文献
@@ -120,16 +121,8 @@ function buildLatex(
 
 /** 构建 BibTeX */
 function buildBibtex(papers: Paper[], sections: Section[]): string {
-  const citedIds = new Set<string>();
-  for (const s of sections) {
-    for (const c of s.citations) {
-      citedIds.add(c.paperId);
-    }
-  }
-
   let bib = '';
-  papers
-    .filter((p) => citedIds.has(p.id))
+  getCitedPapers(papers, sections)
     .forEach((paper, idx) => {
       const key = `ref${idx + 1}`;
       bib += `@article{${key},\n`;
@@ -145,6 +138,39 @@ function buildBibtex(papers: Paper[], sections: Section[]): string {
   return bib;
 }
 
+function buildCitationKeyMap(papers: Paper[], sections: Section[]): Map<string, string> {
+  const keys = new Map<string, string>();
+  getCitedPapers(papers, sections).forEach((paper, index) => keys.set(paper.id, `ref${index + 1}`));
+  return keys;
+}
+
+function getCitedPapers(papers: Paper[], sections: Section[]): Paper[] {
+  const citedIds = new Set<string>();
+  for (const section of sections) {
+    for (const citation of section.citations) {
+      citedIds.add(citation.paperId);
+    }
+  }
+  return papers.filter((paper) => citedIds.has(paper.id));
+}
+
+function renderLatexSectionContent(section: Section, citationKeys: Map<string, string>): string {
+  const placeholders = new Map<string, string>();
+  let content = section.content;
+  section.citations.forEach((citation, index) => {
+    const key = citationKeys.get(citation.paperId);
+    if (!key) return;
+    const placeholder = `DSH_CITATION_${index}_PLACEHOLDER`;
+    placeholders.set(placeholder, `\\cite{${key}}`);
+    content = content.replace(new RegExp(escapeRegExp(citation.marker), 'g'), placeholder);
+  });
+  let escaped = escapeLatex(content);
+  for (const [placeholder, rendered] of placeholders) {
+    escaped = escaped.replace(new RegExp(placeholder, 'g'), rendered);
+  }
+  return escaped;
+}
+
 /** LaTeX 特殊字符转义 */
 function escapeLatex(text: string): string {
   return text
@@ -158,6 +184,10 @@ function escapeLatex(text: string): string {
     .replace(/\}/g, '\\}')
     .replace(/~/g, '\\textasciitilde{}')
     .replace(/\^/g, '\\textasciicircum{}');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function sanitizeFilename(name: string): string {

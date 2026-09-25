@@ -234,7 +234,7 @@ function toMarkdownPath(path: string): string {
 }
 
 /** 构建完整 Markdown */
-function buildMarkdown(
+export function buildMarkdown(
   sections: Section[],
   papers: Paper[],
   options: ExportOptions
@@ -262,27 +262,56 @@ function buildMarkdown(
   md += `---\n\n`;
 
   // 正文
+  const citationNumbers = buildCitationNumberMap(sections, papers);
   for (const section of sections) {
     const level = Math.min(section.nodeId.split('.').length + 1, 4);
     md += `${'#'.repeat(level)} ${section.title}\n\n`;
-    md += `${section.content}\n\n`;
+    md += `${renumberSectionCitations(section, citationNumbers)}\n\n`;
   }
 
   // 参考文献
   md += `## 参考文献\n\n`;
+  const citedPapers = papers.filter((p) => citationNumbers.has(p.id));
+  citedPapers.forEach((paper, idx) => {
+    md += `[${idx + 1}] ${formatReference(paper, options.citationStyle)}\n\n`;
+  });
+
+  return md;
+}
+
+function buildCitationNumberMap(sections: Section[], papers: Paper[]): Map<string, number> {
   const citedPaperIds = new Set<string>();
   for (const section of sections) {
     for (const citation of section.citations) {
       citedPaperIds.add(citation.paperId);
     }
   }
+  const numbers = new Map<string, number>();
+  papers
+    .filter((paper) => citedPaperIds.has(paper.id))
+    .forEach((paper, index) => numbers.set(paper.id, index + 1));
+  return numbers;
+}
 
-  const citedPapers = papers.filter((p) => citedPaperIds.has(p.id));
-  citedPapers.forEach((paper, idx) => {
-    md += `[${idx + 1}] ${formatReference(paper, options.citationStyle)}\n\n`;
+function renumberSectionCitations(section: Section, citationNumbers: Map<string, number>): string {
+  let content = section.content;
+  const replacements = new Map<string, string>();
+  const citations = [...section.citations].sort((a, b) => b.marker.length - a.marker.length);
+  citations.forEach((citation, index) => {
+    const number = citationNumbers.get(citation.paperId);
+    if (!number) return;
+    const placeholder = `DSH_CITATION_${index}_PLACEHOLDER`;
+    replacements.set(placeholder, `[${number}]`);
+    content = content.replace(new RegExp(escapeRegExp(citation.marker), 'g'), placeholder);
   });
+  for (const [placeholder, rendered] of replacements) {
+    content = content.replace(new RegExp(placeholder, 'g'), rendered);
+  }
+  return content;
+}
 
-  return md;
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** 格式化参考文献 */
