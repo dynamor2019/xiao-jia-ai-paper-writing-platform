@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { WORKBENCH_STAGE_LABELS, prepareProjectInput } from '../config/dsh/web/paper-command.js';
+import { WORKBENCH_STAGE_LABELS, prepareProjectInput, validateApprovalStage } from '../config/dsh/web/paper-command.js';
 import { classifyWebTask, installWebModelRouter } from '../config/dsh/web/model-router.js';
+import { verifyCitations } from '../src/plugins/verification/citation-verifier.ts';
 import { PaperPipeline, PIPELINE_STAGES } from '../src/workflows/paper-pipeline.ts';
 import { resolvePaperModelEnv } from './paper-model-env.mjs';
 
@@ -139,6 +140,83 @@ test('paper inputs stay in their own project directories', async () => {
     const second = await prepareProjectInput(join(root, 'paper-b'), source);
     assert.equal(await readFile(join(first, 'reference.pdf'), 'utf8'), 'sample A');
     assert.equal(await readFile(join(second, 'reference.pdf'), 'utf8'), 'sample B');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('citation verification fails closed and preserves every citation', async () => {
+  const originalFetch = globalThis.fetch;
+  const saved = saveEnv([
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'MODEL_MIN_INTERVAL_MS', 'MODEL_STRICT_OUTPUT',
+    'ROUTE_CITATION_PROVIDER', 'ROUTE_CITATION_MODEL',
+  ]);
+  process.env.OPENAI_API_KEY = 'test-key';
+  process.env.OPENAI_BASE_URL = 'https://proxy.invalid/v1';
+  process.env.MODEL_MIN_INTERVAL_MS = '0';
+  process.env.MODEL_STRICT_OUTPUT = 'false';
+  process.env.ROUTE_CITATION_PROVIDER = 'openai';
+  process.env.ROUTE_CITATION_MODEL = 'gpt-5-test';
+  globalThis.fetch = async () => Response.json({
+    output: [{ type: 'message', content: [{ type: 'output_text', text: 'not json' }] }],
+    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+  });
+
+  try {
+    const result = await verifyCitations([{
+      id: 's1',
+      nodeId: 'n1',
+      title: 'Findings',
+      content: 'Supported claim [1]. Unsupported claim [2].',
+      citations: [
+        { paperId: 'p1', marker: '[1]', verified: false, rawText: 'Supported claim [1].' },
+        { paperId: 'missing', marker: '[2]', verified: false, rawText: 'Unsupported claim [2].' },
+      ],
+      wordCount: 4,
+      status: 'completed',
+    }], [{
+      id: 'p1',
+      title: 'Known paper',
+      authors: [],
+      year: new Date().getFullYear(),
+      abstract: 'The known paper discusses only the supported claim.',
+      source: 'manual',
+    }], new Map());
+    assert.equal(result.success, true);
+    assert.equal(result.data.length, 2);
+    assert.equal(result.data[0].status, 'needs-review');
+    assert.equal(result.data[1].status, 'not-found');
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreSavedEnv(saved);
+  }
+});
+
+test('approval validator accepts generated review artifacts only when present', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-approval-gate-'));
+  try {
+    await mkdir(join(root, 'milestones'), { recursive: true });
+    assert.match(validateApprovalStage(root, { topic: 'T' }, 'protocol-design'), /缺少冻结研究方案/);
+    await writeFile(join(root, 'milestones', 'analysis-plan.md'), '# Plan\n');
+    assert.equal(validateApprovalStage(root, { topic: 'T' }, 'protocol-design'), '');
+    assert.match(validateApprovalStage(root, { topic: 'T' }, 'outline-generation'), /缺少论文大纲/);
+    assert.equal(validateApprovalStage(root, { topic: 'T', outline: { nodes: [] } }, 'outline-generation'), '');
+    await writeFile(join(root, 'milestones', 'submission-manifest.md'), 'Status: READY FOR AUTHOR CONFIRMATION\n');
+    assert.equal(validateApprovalStage(root, { topic: 'T' }, 'submission-readiness'), '');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('submission templates are generated as preserved milestone artifacts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-submission-templates-'));
+  try {
+    const pipeline = new PaperPipeline('Template topic', undefined, { outputDir: root, resultsFile: join(root, 'results.csv') });
+    await pipeline.ensureSubmissionDocuments();
+    const integrity = await readFile(join(root, 'milestones', 'research-integrity.md'), 'utf8');
+    const cover = await readFile(join(root, 'milestones', 'cover-letter.md'), 'utf8');
+    assert.match(integrity, /Author Confirmation Required/);
+    assert.match(cover, /Cover Letter Draft/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -290,3 +368,14 @@ test('a stale paper project lock can be reclaimed', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function saveEnv(names) {
+  return new Map(names.map((name) => [name, process.env[name]]));
+}
+
+function restoreSavedEnv(saved) {
+  for (const [name, value] of saved) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}

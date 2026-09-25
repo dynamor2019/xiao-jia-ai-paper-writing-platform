@@ -64,6 +64,7 @@ const WORKBENCH_STAGE_LABELS = [
   ['export', '导出文件'],
   ['submission-readiness', '投稿清单'],
 ];
+const APPROVAL_STAGES = new Set(['topic-confirmation', 'protocol-design', 'outline-generation', 'submission-readiness']);
 
 function readTargetJournalId() {
   try {
@@ -505,7 +506,39 @@ function activeProjectPid(outputDir) {
   }
 }
 
-function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resultsFile, outputDir, agent, approvalMode = 'topic', researchDirection = {}) {
+function validateApprovalStage(outputDir, pipeline, stage) {
+  if (stage === 'topic-confirmation') {
+    let discovery;
+    try {
+      discovery = JSON.parse(readFileSync(join(outputDir, '.dsh-state', 'topic-discovery.json'), 'utf8'));
+    } catch {
+      return '缺少选题证据与独立复核记录，不能确认。';
+    }
+    if (discovery.selected?.title !== pipeline.topic || !discovery.review?.approved
+      || Object.values(discovery.review.checks || {}).length !== 5
+      || Object.values(discovery.review.checks).some((value) => value !== true)) {
+      return '选题科学性复核尚未通过，请检查选题报告并重新选题。';
+    }
+    return '';
+  }
+  if (stage === 'protocol-design') {
+    if (!existsSync(join(outputDir, 'milestones', 'analysis-plan.md'))) return '缺少冻结研究方案 analysis-plan.md，不能确认方案阶段。';
+    return '';
+  }
+  if (stage === 'outline-generation') {
+    if (!Array.isArray(pipeline.outline?.nodes)) return '缺少论文大纲检查点，不能确认大纲阶段。';
+    return '';
+  }
+  if (stage === 'submission-readiness') {
+    const manifestPath = join(outputDir, 'milestones', 'submission-manifest.md');
+    if (!existsSync(manifestPath)) return '缺少投稿清单，不能确认投稿阶段。';
+    if (!/READY FOR AUTHOR CONFIRMATION/.test(readFileSync(manifestPath, 'utf8'))) return '投稿清单仍未通过，请先处理阻断项。';
+    return '';
+  }
+  return `当前阶段 ${stage} 不是可确认节点，请使用 /paper-status 查看真实状态。`;
+}
+
+function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resultsFile, outputDir, agent, approvalMode = 'topic', researchDirection = {}, approvedStage = '') {
   const ownerPid = activeProjectPid(outputDir);
   if (ownerPid) throw new Error(`论文项目正在进程 ${ownerPid} 中运行，请等待完成后再恢复。`);
   const tsxCli = join(PROJECT_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs');
@@ -526,6 +559,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
   if (researchDirection.method) pipelineArgs.push('--method', researchDirection.method);
   if (researchDirection.constraints) pipelineArgs.push('--constraints', researchDirection.constraints);
   pipelineArgs.push('--approval-mode', approvalMode);
+  if (approvedStage) pipelineArgs.push('--approved-stage', approvedStage);
   pipelineArgs.push('--output-dir', outputDir);
   pipelineArgs.push('--project-id', activeProjectId(agent));
   const requestPath = join(RUNS_DIR, `${sessionKey(agent)}-${Date.now()}.request.json`);
@@ -544,6 +578,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
       resultsFile,
       researchDirection,
       approvalMode,
+      approvedStage,
       outputDir,
       paperProjectId: activeProjectId(agent),
       status: 'running',
@@ -560,7 +595,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
     windowsHide: true,
   });
   child.unref();
-  const state = { topic, inputDir, journalId, journalName: journalId ? JOURNALS[journalId] : undefined, experimentCommand, resultsFile, researchDirection, approvalMode, outputDir, paperProjectId: activeProjectId(agent), status: 'running', stage: 'starting', pid: child.pid, startedAt: new Date().toISOString(), logPath };
+  const state = { topic, inputDir, journalId, journalName: journalId ? JOURNALS[journalId] : undefined, experimentCommand, resultsFile, researchDirection, approvalMode, approvedStage, outputDir, paperProjectId: activeProjectId(agent), status: 'running', stage: 'starting', pid: child.pid, startedAt: new Date().toISOString(), logPath };
   saveRunState(agent, state);
   return state;
 }
@@ -589,7 +624,7 @@ function statusText(ctx, invocation) {
     : running
       ? '运行中'
       : state.status === 'awaiting-confirmation'
-        ? '等待确认研究问题'
+        ? '等待确认阶段产物'
         : state.status === 'completed'
           ? '已完成'
           : '已失败';
@@ -621,7 +656,7 @@ async function workbenchText(ctx, invocation) {
     `质量门禁: ${snapshot.quality}`,
     snapshot.latestReport ? `最新报告: ${snapshot.latestReport}` : '最新报告: 尚未生成',
     '',
-    snapshot.runStatus === 'awaiting-confirmation' ? '请先核对选题报告中的关键文献、迁移边界和数据取得路径，再使用 /paper-confirm 继续。' : '工作台和 /paper 命令读取同一流水线状态。',
+    snapshot.runStatus === 'awaiting-confirmation' ? '请先核对当前阶段产物，再使用 /paper-confirm 继续。' : '工作台和 /paper 命令读取同一流水线状态。',
   ].join('\n');
 }
 
@@ -775,7 +810,7 @@ function apply(ctx) {
       const outputDir = join(OUTPUT_DIR, 'paper-projects', projectId);
       const checkpoint = readPipelineState(outputDir);
       if (!checkpoint?.topic) return { kind: 'error', text: '未找到该项目的流水线检查点。' };
-      const awaiting = checkpoint.metadata?.awaitingApproval === 'topic-confirmation';
+      const awaiting = APPROVAL_STAGES.has(checkpoint.metadata?.awaitingApproval);
       const ownerPid = activeProjectPid(outputDir);
       saveRunState(invocation.agent, {
         topic: checkpoint.metadata?.originalTopic || checkpoint.topic,
@@ -796,30 +831,23 @@ function apply(ctx) {
 
   ctx.commands.register({
     name: 'paper-confirm',
-    description: '确认联网推荐的最终研究问题，并从同一断点自动完成余下论文流程',
+    description: '确认当前暂停的论文阶段，并从同一断点继续运行',
     input: { hint: '[无参数]', images: false },
     handler: async (invocation) => {
       const run = readRunState(invocation.agent);
       if (!run?.outputDir) return { kind: 'error', text: '本对话尚未启动论文流程。' };
-      if (run.status !== 'awaiting-confirmation' || run.stage !== 'topic-confirmation') {
-        return { kind: 'error', text: '当前不处于研究问题确认阶段，请使用 /paper-status 查看真实状态。' };
+      if (run.status !== 'awaiting-confirmation') {
+        return { kind: 'error', text: '当前没有等待确认的论文阶段，请使用 /paper-status 查看真实状态。' };
       }
       if (activeProjectPid(run.outputDir)) return { kind: 'error', text: '论文项目仍在运行，请等待完成后再确认。' };
       const pipeline = readPipelineState(run.outputDir);
-      if (!pipeline?.topic) return { kind: 'error', text: '没有找到联网选题结果，无法确认。' };
-      let discovery;
-      try {
-        discovery = JSON.parse(readFileSync(join(run.outputDir, '.dsh-state', 'topic-discovery.json'), 'utf8'));
-      } catch {
-        return { kind: 'error', text: '缺少选题证据与独立复核记录，不能确认。' };
-      }
-      if (discovery.selected?.title !== pipeline.topic || !discovery.review?.approved
-        || Object.values(discovery.review.checks || {}).length !== 5
-        || Object.values(discovery.review.checks).some((value) => value !== true)) {
-        return { kind: 'error', text: '选题科学性复核尚未通过，请检查选题报告并重新选题。' };
-      }
-      startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, run.outputDir, invocation.agent, 'auto', run.researchDirection);
-      return { kind: 'success', text: [`已确认最终研究问题: ${pipeline.topic}`, `论文目录: ${run.outputDir}`, '', '同一流水线已从断点继续；后续文献、方案、数据集、程序实验、写作、两轮评审、格式和投稿包将自动执行。'].join('\n') };
+      if (!pipeline?.topic) return { kind: 'error', text: '没有找到论文流水线检查点，无法确认。' };
+      const approvalStage = pipeline.metadata?.awaitingApproval || run.stage;
+      const label = Object.fromEntries(WORKBENCH_STAGE_LABELS)[approvalStage] || approvalStage;
+      const validationError = validateApprovalStage(run.outputDir, pipeline, approvalStage);
+      if (validationError) return { kind: 'error', text: validationError };
+      startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, run.outputDir, invocation.agent, 'all', run.researchDirection, approvalStage);
+      return { kind: 'success', text: [`已确认阶段: ${label}`, `当前研究问题: ${pipeline.topic}`, `论文目录: ${run.outputDir}`, '', '同一流水线已从断点继续；下一处关键产物仍会暂停等待你确认。'].join('\n') };
     },
   });
 
@@ -924,7 +952,7 @@ function apply(ctx) {
 
       const run = readRunState(invocation.agent);
       if (run?.status === 'awaiting-confirmation') {
-        return { kind: 'error', text: '流水线正在等待你确认最终研究问题，请使用 /paper-confirm。' };
+        return { kind: 'error', text: '流水线正在等待你确认当前阶段产物，请使用 /paper-confirm。' };
       }
       const pipelineRunning = run?.status === 'running' && processIsRunning(run.pid);
       const projectRunning = activeProjectPid(run?.outputDir);
@@ -935,7 +963,7 @@ function apply(ctx) {
         if (!checkpoint || !existsSync(checkpoint)) {
           return { kind: 'error', text: '找到中断任务，但没有可用的流水线检查点；请使用 /paper 重新开始。' };
         }
-        startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, outputDir, invocation.agent, run.approvalMode || 'auto', run.researchDirection);
+        startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, outputDir, invocation.agent, run.approvalMode || 'all', run.researchDirection);
         messages.push(`后台流水线已从检查点恢复：${outputDir}`);
       } else if (pipelineRunning) {
         messages.push('后台流水线正在运行，无需重复恢复。');
@@ -1064,4 +1092,4 @@ function apply(ctx) {
   }
 }
 
-export { apply, inject, name, prepareProjectInput, WORKBENCH_STAGE_LABELS };
+export { apply, inject, name, prepareProjectInput, validateApprovalStage, WORKBENCH_STAGE_LABELS };

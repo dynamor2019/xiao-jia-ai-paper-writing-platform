@@ -29,7 +29,7 @@ import { arxivSearch } from '../plugins/literature/arxiv-search.js';
 import { parseDocument } from '../plugins/literature/pdf-parser.js';
 import { batchSummarizePapers } from '../plugins/literature/paper-summarizer.js';
 import { createResearchProtocol, discoverResearchTopic, runExperiment, searchScholarlyWorks, validateEmpiricalManifest, validateExperimentResults } from '../plugins/research/research-lifecycle.js';
-import { validateTopicReview, type TopicReview } from '../plugins/research/topic-evaluation.js';
+import { validateTopicReview, type ResearchDirection, type TopicReview } from '../plugins/research/topic-evaluation.js';
 import { generateOutline, flattenOutline } from '../plugins/writing/outline-generator.js';
 import { writeSectionParagraph } from '../plugins/writing/section-writer.js';
 import { checkCoherence } from '../plugins/writing/coherence-checker.js';
@@ -46,6 +46,7 @@ const LOCK_FILE = 'paper-pipeline.lock.json';
 
 // 需要人工审批的阶段
 const APPROVAL_STAGES: PipelineStage[] = ['topic-confirmation', 'protocol-design', 'outline-generation', 'submission-readiness'];
+type ApprovalMode = 'auto' | 'topic' | 'all';
 export const PIPELINE_STAGES: PipelineStage[] = [
   'project-intake',
   'topic-discovery',
@@ -103,9 +104,9 @@ export class PaperPipeline {
     this.runtimeDir = join(this.stateDir, 'runtime');
     this.workDir = join(this.runtimeDir, 'work');
     this.reportsDir = this.milestoneDir;
-    this.logsDir = join(this.runtimeDir, 'logs');
+    this.logsDir = join(this.milestoneDir, 'reproducibility', 'logs');
     this.finalDir = join(this.outputDir, 'final');
-    this.extractedTextDir = join(this.workDir, 'extracted-texts');
+    this.extractedTextDir = join(this.milestoneDir, 'source-texts');
     // 尝试从断点恢复
     const saved = this.loadState();
     this.inputDir ||= saved?.metadata?.inputDir;
@@ -141,7 +142,42 @@ export class PaperPipeline {
       direction?.method && `Method and experiment preference: ${direction.method}`,
       direction?.constraints && `Data and implementation constraints: ${direction.constraints}`,
     ].filter(Boolean);
-    return [formatJournalInstructions(this.journalProfile), controls.length > 0 ? `Research direction controls:\n${controls.join('\n')}` : ''].filter(Boolean).join('\n\n');
+    return [
+      formatJournalInstructions(this.journalProfile),
+      controls.length > 0 ? `Research direction controls:\n${controls.join('\n')}` : '',
+      this.topicBoundaryInstructions(),
+    ].filter(Boolean).join('\n\n');
+  }
+
+  private topicBoundaryInstructions(): string {
+    const selected = this.loadSelectedTopic();
+    if (!selected) return '';
+    const transfer = selected.transfer;
+    return [
+      'Frozen interdisciplinary topic controls:',
+      `- Final research question: ${selected.researchQuestion}`,
+      `- Home discipline: ${transfer.homeDiscipline}`,
+      `- Source discipline and borrowed method: ${transfer.sourceDiscipline}; ${transfer.borrowedMethod}`,
+      `- Transfer mechanism to preserve: ${transfer.transferMechanism}`,
+      `- Assumptions that must be tested or stated: ${transfer.assumptions.join('; ')}`,
+      `- Boundaries that must not be exceeded: ${transfer.boundaries.join('; ')}`,
+      `- Failure conditions to report: ${transfer.failureConditions.join('; ')}`,
+      `- Baseline comparison: ${selected.baseline}`,
+      `- Falsification standard: ${selected.falsification}`,
+      `- Data access path: ${selected.dataAccess}`,
+      'Do not broaden the claim beyond these controls; if evidence is missing, narrow the claim instead of filling gaps from model memory.',
+    ].join('\n');
+  }
+
+  private loadSelectedTopic(): ResearchDirection | undefined {
+    const discoveryPath = join(this.stateDir, 'topic-discovery.json');
+    if (!existsSync(discoveryPath)) return undefined;
+    try {
+      const discovery = JSON.parse(readFileSync(discoveryPath, 'utf8')) as { selected?: ResearchDirection };
+      return discovery.selected;
+    } catch {
+      return undefined;
+    }
   }
 
   private researchContext(): string {
@@ -197,22 +233,33 @@ export class PaperPipeline {
       console.log(`[阶段 ${i + 1}/${stages.length}] ${stage}`);
       console.log(`${'='.repeat(60)}`);
 
-      // 审批节点
-      if (APPROVAL_STAGES.includes(stage) && this.onApproval) {
+      if (this.state.metadata.awaitingApproval === stage && this.onApproval) {
         const approved = await this.onApproval(stage, this.state);
         if (!approved) {
-          this.state.metadata.awaitingApproval = stage;
           console.log(`[等待确认] ${stage}`);
           this.saveState();
           return this.state;
         }
         delete this.state.metadata.awaitingApproval;
+        this.saveState();
+        console.log(`[确认通过] ${stage}`);
+        continue;
       }
 
       try {
         await this.executeStage(stage);
         this.saveState();
         console.log(`[完成] ${stage}`);
+        if (APPROVAL_STAGES.includes(stage) && this.onApproval) {
+          const approved = await this.onApproval(stage, this.state);
+          if (!approved) {
+            this.state.metadata.awaitingApproval = stage;
+            console.log(`[等待确认] ${stage}`);
+            this.saveState();
+            return this.state;
+          }
+          delete this.state.metadata.awaitingApproval;
+        }
       } catch (error) {
         console.error(`[失败] ${stage}:`, error);
         this.saveState();
@@ -391,7 +438,7 @@ export class PaperPipeline {
       }
       console.log(`找到 ${docFiles.length} 个文献文件`);
 
-      const papers: Paper[] = [];
+      const localPapers: Paper[] = [];
       await mkdir(this.extractedTextDir, { recursive: true });
       for (const file of docFiles) {
         const docPath = join(this.inputDir, file);
@@ -401,7 +448,7 @@ export class PaperPipeline {
           const paperId = file.replace(/\.(pdf|docx|txt|md)$/i, '');
           const fullTextPath = join(this.extractedTextDir, `${safeFileBase(paperId)}.txt`);
           await writeFile(fullTextPath, result.data.text, 'utf-8');
-          papers.push({
+          localPapers.push({
             id: paperId,
             title: result.data.title || paperId,
             authors: [],
@@ -416,8 +463,9 @@ export class PaperPipeline {
           console.warn(`  解析失败: ${result.error}`);
         }
       }
-      this.state.papers = papers;
-      console.log(`成功加载 ${papers.length} 篇本地文献`);
+      if (localPapers.length === 0) throw new Error('本地文献全部解析失败，不能进入后续写作');
+      this.state.papers = mergePapersById([...localPapers, ...this.state.papers]);
+      console.log(`成功加载 ${localPapers.length} 篇本地文献，并保留联网选题证据文献 ${this.state.papers.length - localPapers.length} 篇`);
       return;
     }
 
@@ -692,9 +740,7 @@ export class PaperPipeline {
     await this.ensureProjectDirs();
     await writeFile(this.outputPath('citation-verification-report.md'), report, 'utf-8');
 
-    if (problems > 0) {
-      console.log(`⚠️  存在问题引用，请查看 ${this.outputPath('citation-verification-report.md')}`);
-    }
+    if (problems > 0) throw new Error(`引用核验未通过；请查看 ${this.outputPath('citation-verification-report.md')}`);
     if (!recencyAudit.passed) {
       throw new Error(`引用时效性门禁未通过；近五年文献须不少于30%且不得集中在单一章节。查看 ${this.outputPath('citation-verification-report.md')}`);
     }
@@ -826,6 +872,7 @@ export class PaperPipeline {
 
   // ===== 投稿包门禁 =====
   private async stageSubmissionReadiness(): Promise<void> {
+    await this.ensureSubmissionDocuments();
     const required = [
       this.outputPath('research-brief.md'),
       this.outputPath('topic-discovery.md'),
@@ -839,10 +886,32 @@ export class PaperPipeline {
       this.outputPath('cover-letter.md'),
     ];
     const missing = required.filter((path) => !existsSync(path));
-    const checklist = `# Submission Readiness\n\n- [x] 联网选题与方向证据\n- [x] 冻结研究方案\n- [x] 实验数据验收\n- [x] 引用核验\n- [x] 独立科技质量审查\n- [${missing.includes(this.outputPath('research-integrity.md')) ? ' ' : 'x'}] 作者、基金、伦理、利益冲突及 AI 使用声明\n- [${missing.includes(this.outputPath('cover-letter.md')) ? ' ' : 'x'}] Cover letter 与投稿材料\n- [ ] 期刊官网当天要求复核\n\nStatus: ${missing.length > 0 ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}\n`;
+    const checklist = `# Submission Readiness\n\n- [x] 联网选题与方向证据\n- [x] 跨学科迁移边界已传递到方案、大纲、正文和质量审查\n- [x] 冻结研究方案\n- [x] 实验数据验收\n- [x] 引用核验\n- [x] 独立科技质量审查\n- [${missing.includes(this.outputPath('research-integrity.md')) ? ' ' : 'x'}] 作者、基金、伦理、利益冲突及 AI 使用声明模板\n- [${missing.includes(this.outputPath('cover-letter.md')) ? ' ' : 'x'}] Cover letter 模板\n- [ ] 作者逐项确认声明、作者顺序、基金、伦理、利益冲突和目标期刊当天要求\n\nStatus: ${missing.length > 0 ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}\n`;
     await writeFile(this.outputPath('submission-manifest.md'), checklist, 'utf8');
     if (missing.length > 0) throw new Error(`投稿前仍缺少产物: ${missing.join(', ')}`);
     console.log('投稿清单已生成；作者声明和实时期刊要求仍需人工确认。');
+  }
+
+  private async ensureSubmissionDocuments(): Promise<void> {
+    await this.ensureProjectDirs();
+    const selected = this.loadSelectedTopic();
+    const integrityPath = this.outputPath('research-integrity.md');
+    if (!existsSync(integrityPath)) {
+      await writeFile(integrityPath, buildResearchIntegrityTemplate({
+        topic: this.state.topic,
+        journalName: this.journalProfile?.name,
+        selected,
+        resultsFile: this.state.metadata.resultsFile,
+      }), 'utf8');
+    }
+    const coverPath = this.outputPath('cover-letter.md');
+    if (!existsSync(coverPath)) {
+      await writeFile(coverPath, buildCoverLetterTemplate({
+        topic: this.state.topic,
+        journalName: this.journalProfile?.name,
+        selected,
+      }), 'utf8');
+    }
   }
 
   // ===== 阶段 10: 输出交付 =====
@@ -936,7 +1005,7 @@ export class PaperPipeline {
     if (/^(paper-full|.*\.docx$|.*\.tex$|.*\.bib$)/i.test(fileName)) return this.finalDir;
     if (/(quality-report|scientific-review|cross-model-review|citation-verification|submission-manifest)/i.test(fileName)) return this.reportsDir;
     if (/(experiment-run\.log)$/i.test(fileName)) return this.logsDir;
-    if (/^(research-brief|revision-log|publication-record|topic-discovery|analysis-plan|data-validation|claim-evidence-matrix)\.md$/i.test(fileName)) return this.milestoneDir;
+    if (/^(research-brief|revision-log|publication-record|topic-discovery|analysis-plan|data-validation|claim-evidence-matrix|research-integrity|cover-letter)\.md$/i.test(fileName)) return this.milestoneDir;
     if (/^(topic-discovery)\.json$/i.test(fileName)) return this.stateDir;
     return undefined;
   }
@@ -1026,6 +1095,74 @@ function safeFileBase(name: string): string {
     .replace(/[. ]+$/, '') || 'paper';
 }
 
+function mergePapersById(papers: Paper[]): Paper[] {
+  const merged = new Map<string, Paper>();
+  for (const paper of papers) {
+    if (!merged.has(paper.id)) merged.set(paper.id, paper);
+  }
+  return [...merged.values()];
+}
+
+function buildResearchIntegrityTemplate(options: {
+  topic: string;
+  journalName?: string;
+  selected?: ResearchDirection;
+  resultsFile?: string;
+}): string {
+  const transfer = options.selected?.transfer;
+  return [
+    '# Research Integrity and Author Declarations',
+    '',
+    `- Manuscript title: ${options.topic}`,
+    `- Target journal: ${options.journalName || 'To be selected'}`,
+    `- Results file checked by pipeline: ${options.resultsFile || 'AUTHOR MUST ADD'}`,
+    '',
+    '## Author Confirmation Required',
+    '',
+    '- [ ] Author names, order, affiliations, and corresponding author are correct.',
+    '- [ ] Funding statement is complete, including grant numbers or "no external funding".',
+    '- [ ] Ethics approval, consent, IRB/IACUC review, or exemption status is complete.',
+    '- [ ] Conflicts of interest are disclosed or explicitly declared absent.',
+    '- [ ] Data, code, and material availability statements match the actual repository or archive.',
+    '- [ ] AI assistance was used only for drafting/checking and all scholarly claims were verified by the authors.',
+    '- [ ] The target journal instructions were checked on the journal website on the submission date.',
+    '',
+    '## Pipeline Evidence',
+    '',
+    '- Topic discovery, bounded interdisciplinary transfer, protocol freeze, data validation, citation verification, two-round scientific review, and export quality reports are recorded in this project.',
+    transfer ? `- Interdisciplinary boundary: ${transfer.homeDiscipline} uses ${transfer.borrowedMethod} from ${transfer.sourceDiscipline} only under these assumptions: ${transfer.assumptions.join('; ')}.` : '- Interdisciplinary boundary: see topic-discovery.md.',
+    transfer ? `- Failure conditions that must remain visible in the manuscript: ${transfer.failureConditions.join('; ')}.` : '- Failure conditions: see topic-discovery.md.',
+    '',
+    'This file is a submission template, not an author-signed declaration. The manuscript must not be submitted until every checkbox above is completed by the authors.',
+    '',
+  ].join('\n');
+}
+
+function buildCoverLetterTemplate(options: {
+  topic: string;
+  journalName?: string;
+  selected?: ResearchDirection;
+}): string {
+  return [
+    '# Cover Letter Draft',
+    '',
+    'Dear Editor,',
+    '',
+    `Please consider our manuscript, "${options.topic}", for publication in ${options.journalName || '[TARGET JOURNAL]'}.`,
+    '',
+    options.selected
+      ? `The study examines ${options.selected.researchQuestion}. Its contribution is framed as a bounded cross-disciplinary adaptation: ${options.selected.transfer.borrowedMethod} from ${options.selected.transfer.sourceDiscipline} is applied to ${options.selected.transfer.targetProblem} in ${options.selected.transfer.homeDiscipline}, with explicit assumptions, boundaries, baseline comparison, and falsification criteria.`
+      : 'The study contribution, methods, and boundaries are documented in the project topic-discovery and analysis-plan files.',
+    '',
+    'The manuscript has passed the platform checks for protocol freeze, data validation, citation verification, independent scientific review, and export quality. All author declarations, ethics statements, funding details, competing interests, data/code availability, and journal-specific requirements must be reviewed and completed by the authors before submission.',
+    '',
+    'Sincerely,',
+    '',
+    '[AUTHOR NAMES AND AFFILIATIONS]',
+    '',
+  ].join('\n');
+}
+
 function createPaperOutputDir(topic: string, paperProjectId?: string): string {
   if (paperProjectId) {
     return join(paperOutputRoot(), 'paper-projects', safeFileBase(paperProjectId));
@@ -1086,7 +1223,8 @@ async function main() {
   let outputDir: string | undefined;
   let paperProjectId: string | undefined;
   const researchDirection: NonNullable<PipelineState['metadata']['researchDirection']> = {};
-  let approvalMode: 'auto' | 'topic' = 'topic';
+  let approvalMode: ApprovalMode = 'topic';
+  let approvedStage: PipelineStage | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--input-dir' && args[i + 1]) {
@@ -1113,8 +1251,12 @@ async function main() {
       researchDirection.constraints = args[++i];
     } else if (args[i] === '--approval-mode' && args[i + 1]) {
       const mode = args[++i];
-      if (mode !== 'auto' && mode !== 'topic') throw new Error(`未知审批模式: ${mode}`);
+      if (mode !== 'auto' && mode !== 'topic' && mode !== 'all') throw new Error(`未知审批模式: ${mode}`);
       approvalMode = mode;
+    } else if (args[i] === '--approved-stage' && args[i + 1]) {
+      const stage = args[++i] as PipelineStage;
+      if (!APPROVAL_STAGES.includes(stage)) throw new Error(`不能确认非审批阶段: ${stage}`);
+      approvedStage = stage;
     } else if (!args[i].startsWith('--')) {
       topic = args[i];
     }
@@ -1140,12 +1282,24 @@ async function main() {
     console.log('当前进度摘要:');
     console.log(`  文献数: ${state.papers.length}`);
     console.log(`  已完成节数: ${state.sections.length}`);
+    if (approvedStage === stage) {
+      console.log(`  已收到用户确认: ${stage}`);
+      return true;
+    }
+    if (approvalMode === 'auto') {
+      console.log('  自动通过审批');
+      return true;
+    }
     if (approvalMode === 'topic' && stage === 'topic-confirmation') {
       console.log(`  等待用户确认最终研究问题: ${state.topic}`);
       return false;
     }
-    console.log('  自动通过审批');
-    return true;
+    if (approvalMode === 'topic') {
+      console.log('  自动通过审批');
+      return true;
+    }
+    console.log(`  等待用户确认阶段产物: ${stage}`);
+    return false;
   }, { inputDir, journalId, experimentCommand, resultsFile, outputDir, paperProjectId, researchDirection });
 
   if (paperProjectId) console.log(`[论文项目ID] ${paperProjectId}`);

@@ -222,17 +222,31 @@ function extractCitations(content: string, papers: Paper[]): Citation[] {
   while ((match = regex.exec(content)) !== null) {
     const idx = parseInt(match[1], 10) - 1;
     const paper = papers[idx];
-    if (paper) {
-      citations.push({
-        paperId: paper.id,
-        marker: match[0],
-        verified: false,
-        rawText: '',
-      });
-    }
+    citations.push({
+      paperId: paper?.id || `missing-reference-${match[1]}`,
+      marker: match[0],
+      verified: false,
+      rawText: citationContext(content, match.index),
+    });
   }
 
   return citations;
+}
+
+function citationContext(content: string, markerIndex: number): string {
+  const leftBoundary = Math.max(
+    content.lastIndexOf('。', markerIndex),
+    content.lastIndexOf('！', markerIndex),
+    content.lastIndexOf('？', markerIndex),
+    content.lastIndexOf('.', markerIndex),
+    content.lastIndexOf(';', markerIndex),
+    content.lastIndexOf('\n', markerIndex),
+  );
+  const rightCandidates = ['。', '！', '？', '.', ';', '\n']
+    .map((token) => content.indexOf(token, markerIndex))
+    .filter((index) => index >= 0);
+  const rightBoundary = rightCandidates.length > 0 ? Math.min(...rightCandidates) + 1 : content.length;
+  return content.slice(leftBoundary + 1, rightBoundary).trim().slice(0, 1000);
 }
 
 function countWords(text: string): number {

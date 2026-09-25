@@ -19,6 +19,8 @@ const SYSTEM_PROMPT = `你是一位严格的学术诚信审核员，专门核验
 输出为 JSON 格式，逐条给出核验结果。
 务必严格：宁可标记为"待人工确认"，也不要放过可能的幻觉引用。`;
 
+const VALID_STATUSES = new Set(['verified', 'not-found', 'mismatch', 'needs-review']);
+
 export interface VerificationResult {
   citation: Citation;
   paper?: Paper;
@@ -68,19 +70,33 @@ async function verifyBatch(
   notes: Map<string, PaperNote>,
   client: ReturnType<typeof getModelClient>
 ): Promise<VerificationResult[]> {
+  const paperById = new Map(papers.map((paper) => [paper.id, paper]));
+  const finalResults: VerificationResult[] = citations.map((citation) => {
+    const paper = paperById.get(citation.paperId);
+    if (!paper) return buildResult(citation, undefined, 'not-found', 'paperId 不在文献库中');
+    if (!citation.rawText?.trim()) return buildResult(citation, paper, 'needs-review', '缺少引用所在句，不能判断文献是否支撑该句');
+    return buildResult(citation, paper, 'needs-review', '模型核验尚未返回');
+  });
+  const reviewable = citations
+    .map((citation, originalIndex) => ({ citation, originalIndex, paper: paperById.get(citation.paperId) }))
+    .filter((item) => item.paper && item.citation.rawText?.trim());
+  if (reviewable.length === 0) return finalResults;
+
   // 构建文献库上下文
-  const paperLibrary = papers
-    .map((p, idx) => {
-      const note = notes.get(p.id);
-      return `[${idx + 1}] ID: ${p.id}
-   标题: ${p.title}
-   年份: ${p.year}
-   核心发现: ${note?.keyFindings || p.abstract.slice(0, 150)}`;
+  const paperLibrary = reviewable
+    .map(({ paper }, idx) => {
+      const note = notes.get(paper!.id);
+      return `[${idx + 1}] ID: ${paper!.id}
+   标题: ${paper!.title}
+   年份: ${paper!.year}
+   摘要/核心发现: ${(note?.keyFindings || paper!.abstract).slice(0, 500)}
+   可引用点: ${note?.citablePoints?.slice(0, 4).join('; ') || '无结构化笔记'}`;
     })
     .join('\n\n');
 
-  const citationsList = citations
-    .map((c, i) => `引用${i + 1}: marker=${c.marker}, paperId=${c.paperId}`)
+  const citationsList = reviewable
+    .map(({ citation }, i) => `引用${i + 1}: marker=${citation.marker}, paperId=${citation.paperId}
+   引用所在句: ${citation.rawText.slice(0, 800)}`)
     .join('\n');
 
   const userPrompt = `请核验以下引用。
@@ -106,7 +122,11 @@ ${citationsList}
 - verified: 文献存在且引用合理
 - not-found: paperId 在文献库中不存在
 - mismatch: 文献存在但引用的观点与原文不符
-- needs-review: 证据不足、上下文不足、观点过强或无法确定，需要人工确认`;
+- needs-review: 证据不足、上下文不足、观点过强或无法确定，需要人工确认
+
+要求：
+- results 必须覆盖上面每一条待核验引用，不得省略。
+- 只能依据给出的引用所在句、摘要和笔记判断；如果无法确定，输出 needs-review。`;
 
   const response = await client.generate(SYSTEM_PROMPT, userPrompt, {
     task: 'citation',
@@ -115,23 +135,42 @@ ${citationsList}
   });
 
   const jsonMatch = response.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return [];
+  if (!jsonMatch) {
+    for (const { citation, originalIndex, paper } of reviewable) {
+      finalResults[originalIndex] = buildResult(citation, paper, 'needs-review', '核验模型没有返回可解析 JSON');
+    }
+    return finalResults;
+  }
 
   try {
     const parsed = JSON.parse(jsonMatch[0]);
-    return (parsed.results || []).map((r: { index: number; status: string; reason: string }, i: number) => {
-      const citation = citations[r.index - 1] || citations[i];
-      const paper = papers.find((p) => p.id === citation.paperId);
-      return {
-        citation,
-        paper,
-        status: r.status as VerificationResult['status'],
-        reason: r.reason,
-      };
-    });
+    const rows = Array.isArray(parsed.results) ? parsed.results as Array<{ index?: number; status?: string; reason?: string }> : [];
+    for (let i = 0; i < reviewable.length; i++) {
+      const row = rows.find((item) => item.index === i + 1);
+      const { citation, originalIndex, paper } = reviewable[i];
+      if (!row) {
+        finalResults[originalIndex] = buildResult(citation, paper, 'needs-review', '核验模型漏掉了这条引用');
+        continue;
+      }
+      const status = VALID_STATUSES.has(String(row.status)) ? row.status as VerificationResult['status'] : 'needs-review';
+      finalResults[originalIndex] = buildResult(citation, paper, status, row.reason || '核验模型未给出说明');
+    }
+    return finalResults;
   } catch {
-    return [];
+    for (const { citation, originalIndex, paper } of reviewable) {
+      finalResults[originalIndex] = buildResult(citation, paper, 'needs-review', '核验模型返回的 JSON 无法解析');
+    }
+    return finalResults;
   }
+}
+
+function buildResult(
+  citation: Citation,
+  paper: Paper | undefined,
+  status: VerificationResult['status'],
+  reason: string
+): VerificationResult {
+  return { citation, paper, status, reason };
 }
 
 /** 生成引用核验报告 */
@@ -149,11 +188,12 @@ export function generateVerificationReport(results: VerificationResult[]): strin
   report += `- ⚠️ 观点不符: ${mismatch}\n`;
   report += `- 🔍 待人工确认: ${needsReview}\n\n`;
 
-  if (notFound > 0 || mismatch > 0) {
+  if (notFound > 0 || mismatch > 0 || needsReview > 0) {
     report += `## 问题引用\n\n`;
     for (const r of results.filter((r) => r.status !== 'verified')) {
       report += `### [${r.status}] ${r.citation.marker}\n`;
       report += `- 文献ID: ${r.citation.paperId}\n`;
+      if (r.citation.rawText) report += `- 引用所在句: ${r.citation.rawText}\n`;
       report += `- 说明: ${r.reason}\n\n`;
     }
   }
