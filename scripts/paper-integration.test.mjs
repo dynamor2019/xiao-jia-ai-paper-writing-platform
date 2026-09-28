@@ -120,6 +120,30 @@ test('Web routing does not force RayinAI when its credential is absent', async (
   }
 });
 
+test('Web routing repairs an old session that still requests RayinAI without a key', async () => {
+  const saved = saveEnv(['OPENAI_API_KEY', 'ANTHROPIC_API_KEY']);
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  const handlers = new Map();
+  const agent = {
+    session: { header: {}, seq: 1, snapshotEvents: () => [{ type: 'model/selection' }] },
+  };
+  try {
+    installWebModelRouter({
+      on: (event, handler) => handlers.set(event, handler),
+      get: () => ({ listProviders: () => [{ id: 'rayinai' }] }),
+      agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }) },
+      logger: { warn: () => {} },
+    }, async () => []);
+    const route = await handlers.get('agent/request')({ agent, turn: 1 }, async () => ({
+      provider: 'rayinai', model: 'gpt-5.6-terra', reasoningEffort: 'high',
+    }));
+    assert.deepEqual(route, { provider: 'deepseek-official', model: 'deepseek-v4-flash' });
+  } finally {
+    restoreSavedEnv(saved);
+  }
+});
+
 test('selected DID method requires empirical evidence and blocks changed evidence before writing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'xiaojia-empirical-gate-'));
   try {

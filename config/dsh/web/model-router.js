@@ -7,6 +7,7 @@ const PROJECT_DIR = resolve(process.env.DSH_PAPER_PROJECT_DIR || String.raw`__DS
 const DEFAULT_ROUTE = { provider: 'rayinai', model: 'gpt-5.6-terra' };
 const PROVIDERS = { openai: 'rayinai', claude: 'rayinai-claude' };
 const PROVIDER_KEYS = { rayinai: 'OPENAI_API_KEY', 'rayinai-claude': 'ANTHROPIC_API_KEY' };
+const SAFE_ROUTE = { provider: 'deepseek-official', model: 'deepseek-v4-flash' };
 const TASK_PATTERNS = [
   ['citation', /引用核验|核对引用|参考文献|citation|doi/i],
   ['quality', /审稿|论文质量|科学审查|质量门禁|peer.review|review.*paper/i],
@@ -102,6 +103,17 @@ export function installWebModelRouter(ctx, routeCandidates) {
 
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
     const config = await next();
+    if (!providerHasCredential(config.provider)) {
+      const task = activeTasks.get(agent)?.turn === turn ? activeTasks.get(agent).task : undefined;
+      const candidates = task ? await routeCandidates(task) : [];
+      const route = firstAvailableRoute(ctx, candidates)
+        || ctx.agentDefaultModel?.currentSelection?.()
+        || SAFE_ROUTE;
+      const fallback = providerHasCredential(route.provider) ? route : SAFE_ROUTE;
+      const { reasoningEffort: _previousEffort, ...rest } = config;
+      ctx.logger?.warn?.(`Web 模型缺少凭据: ${config.provider} -> ${fallback.provider}/${fallback.model}`);
+      return { ...rest, ...fallback };
+    }
     const selected = await selectedRoute(agent, turn, step);
     if (!selected) return config;
     const { task, route } = selected;
