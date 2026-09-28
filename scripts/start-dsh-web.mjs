@@ -18,6 +18,7 @@ import { patchWorkbenchPylustrator } from './patch-dsh-workbench-pylustrator.mjs
 import { patchIncompatibleUiBundles } from './patch-dsh-incompatible-ui-bundles.mjs';
 import { patchDshBranding } from './patch-dsh-branding.mjs';
 import { syncDshRuntime } from './sync-dsh-runtime.mjs';
+import { resolvePaperModelEnv } from './paper-model-env.mjs';
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
 
 const binPath = join(PROJECT_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
@@ -110,6 +111,8 @@ process.env.NPM_CONFIG_GLOBALCONFIG = join(npmPrefix, 'etc', 'npmrc');
 process.env.NODE_PATH = join(npmPrefix, 'node_modules');
 process.env.DSH_PAPER_PROJECT_DIR = PROJECT_ROOT;
 process.env.PAPER_DATA_ROOT = dataRoot;
+const resolvedModelEnv = resolvePaperModelEnv(process.env);
+Object.assign(process.env, resolvedModelEnv);
 
 const synced = await syncDshRuntime();
 console.log(`论文平台配置已同步（${synced.skills} 个 skills）。`);

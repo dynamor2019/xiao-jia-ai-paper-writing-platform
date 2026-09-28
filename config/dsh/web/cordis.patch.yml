@@ -34,11 +34,7 @@
   config:
     policy: never
 
-# 默认模型改为 OpenAI 中转模型，避免回落到 DeepSeek 默认模型。
-- id: agent-default-model
-  config:
-    provider: rayinai
-    model: gpt-5.6-terra
+# 默认模型由 paper-web-model-router 按可用凭据选择；缺少中转站 key 时不强制 rayinai。
 
 # 使用无需 DeepSeek 原生协议的 OpenAlex 学术搜索。
 - id: web

@@ -17,6 +17,9 @@ test('workbench stages match the pipeline contract', () => {
 });
 
 test('Web requests use task routes while explicit model selection stays in control', async () => {
+  const saved = saveEnv(['OPENAI_API_KEY', 'ANTHROPIC_API_KEY']);
+  process.env.OPENAI_API_KEY = 'test-openai-key';
+  process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
   const handlers = new Map();
   const events = [];
   const session = {
@@ -41,47 +44,80 @@ test('Web requests use task routes while explicit model selection stays in contr
   const request = async (turn, config = { provider: 'rayinai', model: 'gpt-5.6-terra' }) =>
     handlers.get('agent/request')({ agent, turn, step: 1 }, async () => config);
 
-  assert.equal(classifyWebTask('请总结这篇文献'), 'summary');
-  await enter('请总结这篇文献', 1);
-  assert.deepEqual(await request(1), { provider: 'rayinai', model: 'gpt-5.6-luna' });
-  handlers.get('agent/inbox/claimed')({
-    agent, turn: 2,
-    message: { source: { kind: 'user' }, content: [{ type: 'text', text: '请设计研究方案' }] },
-  });
-  const prompt = await handlers.get('system-prompt/assemble')({}, { agent }, async () => ({ variables: { model: 'gpt-5.6-terra' } }));
-  assert.equal(prompt.variables.model, 'claude-opus-5');
-  await enter('请设计研究方案', 2);
-  assert.deepEqual(await request(2), { provider: 'rayinai-claude', model: 'claude-opus-5' });
-  const retry = await handlers.get('agent/request-error')({ agent, turn: 2, step: 1, failure: { code: 'SERVER' } }, async () => undefined);
-  assert.deepEqual(retry, { kind: 'retry' });
-  assert.deepEqual(await handlers.get('agent/request')({ agent, turn: 2, step: 1 }, async () => ({
-    provider: 'rayinai-claude', model: 'claude-opus-5',
-  })), { provider: 'rayinai', model: 'gpt-5.6-sol' });
-  const noSecondRetry = await handlers.get('agent/request-error')({ agent, turn: 2, step: 1, failure: { code: 'SERVER' } }, async () => undefined);
-  assert.equal(noSecondRetry, undefined);
-  events.push({ type: 'model/selection' });
-  assert.deepEqual(await request(2, { provider: 'rayinai', model: 'gpt-5.6-sol' }), {
-    provider: 'rayinai', model: 'gpt-5.6-sol',
-  });
+  try {
+    assert.equal(classifyWebTask('请总结这篇文献'), 'summary');
+    await enter('请总结这篇文献', 1);
+    assert.deepEqual(await request(1), { provider: 'rayinai', model: 'gpt-5.6-luna' });
+    handlers.get('agent/inbox/claimed')({
+      agent, turn: 2,
+      message: { source: { kind: 'user' }, content: [{ type: 'text', text: '请设计研究方案' }] },
+    });
+    const prompt = await handlers.get('system-prompt/assemble')({}, { agent }, async () => ({ variables: { model: 'gpt-5.6-terra' } }));
+    assert.equal(prompt.variables.model, 'claude-opus-5');
+    await enter('请设计研究方案', 2);
+    assert.deepEqual(await request(2), { provider: 'rayinai-claude', model: 'claude-opus-5' });
+    const retry = await handlers.get('agent/request-error')({ agent, turn: 2, step: 1, failure: { code: 'SERVER' } }, async () => undefined);
+    assert.deepEqual(retry, { kind: 'retry' });
+    assert.deepEqual(await handlers.get('agent/request')({ agent, turn: 2, step: 1 }, async () => ({
+      provider: 'rayinai-claude', model: 'claude-opus-5',
+    })), { provider: 'rayinai', model: 'gpt-5.6-sol' });
+    const noSecondRetry = await handlers.get('agent/request-error')({ agent, turn: 2, step: 1, failure: { code: 'SERVER' } }, async () => undefined);
+    assert.equal(noSecondRetry, undefined);
+    events.push({ type: 'model/selection' });
+    assert.deepEqual(await request(2, { provider: 'rayinai', model: 'gpt-5.6-sol' }), {
+      provider: 'rayinai', model: 'gpt-5.6-sol',
+    });
+  } finally {
+    restoreSavedEnv(saved);
+  }
 });
 
 test('Web routing uses the configured fallback when a provider is unavailable', async () => {
+  const saved = saveEnv(['OPENAI_API_KEY', 'ANTHROPIC_API_KEY']);
+  process.env.OPENAI_API_KEY = 'test-openai-key';
+  process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
   const handlers = new Map();
   const session = { header: {}, seq: 0, snapshotEvents: () => [] };
   const agent = { session };
-  installWebModelRouter({
-    on: (event, handler) => handlers.set(event, handler),
-    get: () => ({ listProviders: () => [{ id: 'rayinai' }] }),
-    logger: { info: () => {} },
-  }, async () => [
-    { provider: 'claude', model: 'claude-opus-5' },
-    { provider: 'openai', model: 'gpt-5.6-sol' },
-  ]);
-  await handlers.get('agent/pre-step')({ agent, turn: 1 }, async () => ({
-    kind: 'enter', messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '设计研究方案' }] }],
-  }));
-  const route = await handlers.get('agent/request')({ agent, turn: 1 }, async () => ({ provider: 'rayinai', model: 'gpt-5.6-terra' }));
-  assert.deepEqual(route, { provider: 'rayinai', model: 'gpt-5.6-sol' });
+  try {
+    installWebModelRouter({
+      on: (event, handler) => handlers.set(event, handler),
+      get: () => ({ listProviders: () => [{ id: 'rayinai' }] }),
+      logger: { info: () => {} },
+    }, async () => [
+      { provider: 'claude', model: 'claude-opus-5' },
+      { provider: 'openai', model: 'gpt-5.6-sol' },
+    ]);
+    await handlers.get('agent/pre-step')({ agent, turn: 1 }, async () => ({
+      kind: 'enter', messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '设计研究方案' }] }],
+    }));
+    const route = await handlers.get('agent/request')({ agent, turn: 1 }, async () => ({ provider: 'rayinai', model: 'gpt-5.6-terra' }));
+    assert.deepEqual(route, { provider: 'rayinai', model: 'gpt-5.6-sol' });
+  } finally {
+    restoreSavedEnv(saved);
+  }
+});
+
+test('Web routing does not force RayinAI when its credential is absent', async () => {
+  const saved = saveEnv(['OPENAI_API_KEY', 'ANTHROPIC_API_KEY']);
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  const handlers = new Map();
+  const agent = { session: { header: {}, seq: 0, snapshotEvents: () => [] } };
+  try {
+    installWebModelRouter({
+      on: (event, handler) => handlers.set(event, handler),
+      get: () => ({ listProviders: () => [{ id: 'rayinai' }, { id: 'rayinai-claude' }] }),
+      logger: { info: () => {} },
+    }, async () => [{ provider: 'openai', model: 'gpt-5.6-sol' }]);
+    await handlers.get('agent/pre-step')({ agent, turn: 1 }, async () => ({
+      kind: 'enter', messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '写论文摘要' }] }],
+    }));
+    const config = { provider: 'deepseek', model: 'deepseek-v4-flash' };
+    assert.deepEqual(await handlers.get('agent/request')({ agent, turn: 1 }, async () => config), config);
+  } finally {
+    restoreSavedEnv(saved);
+  }
 });
 
 test('selected DID method requires empirical evidence and blocks changed evidence before writing', async () => {

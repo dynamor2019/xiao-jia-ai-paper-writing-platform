@@ -6,6 +6,7 @@ const name = 'paper-web-model-router';
 const PROJECT_DIR = resolve(process.env.DSH_PAPER_PROJECT_DIR || String.raw`__DSH_PAPER_PROJECT_DIR__`);
 const DEFAULT_ROUTE = { provider: 'rayinai', model: 'gpt-5.6-terra' };
 const PROVIDERS = { openai: 'rayinai', claude: 'rayinai-claude' };
+const PROVIDER_KEYS = { rayinai: 'OPENAI_API_KEY', 'rayinai-claude': 'ANTHROPIC_API_KEY' };
 const TASK_PATTERNS = [
   ['citation', /引用核验|核对引用|参考文献|citation|doi/i],
   ['quality', /审稿|论文质量|科学审查|质量门禁|peer.review|review.*paper/i],
@@ -45,11 +46,20 @@ function firstAvailableRoute(ctx, candidates) {
   const registered = ctx.get?.('llm')?.listProviders?.();
   for (const candidate of candidates) {
     const provider = PROVIDERS[candidate.provider];
-    if (provider && candidate.model && (!registered || registered.some((item) => item.id === provider))) {
+    if (provider && candidate.model && providerHasCredential(provider) && (!registered || registered.some((item) => item.id === provider))) {
       return { provider, model: candidate.model };
     }
   }
   return undefined;
+}
+
+function providerHasCredential(provider) {
+  const envName = PROVIDER_KEYS[provider];
+  return !envName || Boolean(process.env[envName]?.trim());
+}
+
+function defaultRoute() {
+  return providerHasCredential(DEFAULT_ROUTE.provider) ? DEFAULT_ROUTE : undefined;
 }
 
 function canFailOver(failure) {
@@ -70,7 +80,8 @@ export function installWebModelRouter(ctx, routeCandidates) {
     const pending = recovery.get(agent);
     const route = pending?.turn === turn && pending.step === step
       ? pending.route
-      : firstAvailableRoute(ctx, candidates) || DEFAULT_ROUTE;
+      : firstAvailableRoute(ctx, candidates) || defaultRoute();
+    if (!route) return undefined;
     return { task, route };
   }
 
