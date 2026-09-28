@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { copyFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, basename, extname, relative, resolve } from 'node:path';
+import { addFeedback, findClaimEvidence, readFeedback, resolveFeedback } from './paper-feedback.js';
 
 const name = 'command-paper';
 const inject = ['commands', 'goals', 'webServer', 'systemPrompt'];
@@ -654,6 +655,7 @@ async function workbenchText(ctx, invocation) {
     `输入资料: ${snapshot.inputCount} 个文件`,
     `可交付文件: ${snapshot.deliverableCount} 个`,
     `质量门禁: ${snapshot.quality}`,
+    `待处理研究异议: ${snapshot.openFeedback}`,
     snapshot.latestReport ? `最新报告: ${snapshot.latestReport}` : '最新报告: 尚未生成',
     '',
     snapshot.runStatus === 'awaiting-confirmation' ? '请先核对当前阶段产物，再使用 /paper-confirm 继续。' : '工作台和 /paper 命令读取同一流水线状态。',
@@ -694,6 +696,7 @@ async function workbenchSnapshot(agent) {
   const word = deliverables.find((row) => row.file.toLowerCase().endsWith('.docx') && !row.file.startsWith('~$'));
   const workspace = readWorkspaceState(agent);
   const pipeline = readPipelineState(baseDir);
+  const openFeedback = readFeedback(baseDir).filter((item) => item.status === 'open').length;
   const runStatus = running ? 'running' : state.status;
   const pipelineStage = WORKBENCH_STAGE_LABELS.some(([id]) => id === state.stage) ? state.stage : pipeline?.stage || 'project-intake';
   const currentIndex = Math.max(0, WORKBENCH_STAGE_LABELS.findIndex(([id]) => id === pipelineStage));
@@ -725,6 +728,7 @@ async function workbenchSnapshot(agent) {
     inputCount: await countDocs(state.inputDir || join(baseDir, 'input')),
     deliverableCount: deliverables.length,
     quality,
+    openFeedback,
     latestReport: latestReport?.path,
     latestWord: word?.path,
     latestWordPreviewUrl: word ? `/dsh-paper-preview?sessionId=${encodeURIComponent(agent?.id || '')}&file=${encodeURIComponent(word.path)}` : '',
@@ -747,10 +751,12 @@ async function submissionText(agent) {
   const report = artifacts.find((row) => /quality-report\.md$/i.test(row.file));
   const reportText = report ? readFileSync(report.path, 'utf8') : '';
   const qualityPassed = Boolean(report) && /\bPASS\b|Verdict:\s*pass/i.test(reportText) && !/\bBLOCKED\b|Verdict:\s*(?:major revision|reject)/i.test(reportText);
+  const openFeedback = readFeedback(baseDir).filter((item) => item.status === 'open').length;
   const checks = [
     ['论文 Markdown 源稿', Boolean(latestMarkdown), latestMarkdown?.path],
     ['正式 Word 文件', Boolean(latestDocx), latestDocx?.path],
     ['质量门禁 PASS', qualityPassed, report?.path],
+    ['研究者异议已处理', openFeedback === 0, openFeedback ? `${openFeedback} 项待处理` : undefined],
     ['引用核验报告', artifacts.some((row) => /citation-verification/i.test(row.file))],
     ['投稿清单', existsSync(join(baseDir, 'milestones', 'submission-manifest.md')), join(baseDir, 'milestones', 'submission-manifest.md')],
     ['Cover letter', artifacts.some((row) => /cover[-_ ]letter/i.test(row.file))],
@@ -902,6 +908,56 @@ function apply(ctx) {
         kind: 'success',
         text: ['论文产物（按更新时间排序）:', ...artifacts.map((row) => `- ${row.file} (${Math.ceil(row.size / 1024)} KB)\n  ${row.path}`)].join('\n'),
       };
+    },
+  });
+
+  ctx.commands.register({
+    name: 'paper-evidence',
+    description: '按主张 ID 查找本论文的证据矩阵记录',
+    input: { hint: '<主张 ID>', images: false },
+    handler: async (invocation) => {
+      const baseDir = activePaperDir(invocation.agent);
+      if (!baseDir) return { kind: 'error', text: '请先建立或接入论文项目。' };
+      try {
+        const found = findClaimEvidence(baseDir, invocation.rawInput?.trim());
+        return found
+          ? { kind: 'success', text: `矩阵: ${found.path}\n${found.row}\n请沿证据来源和结果位置继续核对原始文件。` }
+          : { kind: 'error', text: '未找到该主张 ID；请核对当前论文的 claim-evidence-matrix.md。' };
+      } catch (error) {
+        return { kind: 'error', text: error.message };
+      }
+    },
+  });
+
+  ctx.commands.register({
+    name: 'paper-feedback',
+    description: '登记、查看或处理本论文的研究者异议，不自动修改稿件',
+    input: { hint: '[list | add <主张ID> | <异议> | <证据线索> | resolve <反馈ID> | <处理说明> | <复核依据>]', images: false },
+    handler: async (invocation) => {
+      const baseDir = activePaperDir(invocation.agent);
+      if (!baseDir) return { kind: 'error', text: '请先建立或接入论文项目。' };
+      const raw = invocation.rawInput?.trim() || 'list';
+      try {
+        if (raw === 'list') {
+          const items = readFeedback(baseDir);
+          return { kind: 'success', text: items.length
+            ? items.map((item) => `${item.status === 'open' ? '待处理' : '已处理'} ${item.id} [${item.stage}] ${item.claimId}: ${item.issue}\n证据: ${item.evidence}${item.resolution ? `\n处理: ${item.resolution}; 复核: ${item.verification}` : ''}`).join('\n\n')
+            : '当前论文没有研究者异议。' };
+        }
+        const [action, ...parts] = raw.split('|').map((part) => part.trim());
+        if (action.startsWith('add ') && parts.length === 2) {
+          const stage = readRunState(invocation.agent)?.stage || readPipelineState(baseDir)?.stage || 'project-intake';
+          const item = addFeedback(baseDir, stage, action.slice(4), parts[0], parts[1]);
+          return { kind: 'success', text: `已登记异议 ${item.id}，阶段 ${stage}；投稿检查会阻断未处理异议。` };
+        }
+        if (action.startsWith('resolve ') && parts.length === 2) {
+          const item = resolveFeedback(baseDir, action.slice(8).trim(), parts[0], parts[1]);
+          return { kind: 'success', text: `异议 ${item.id} 已记录处理与复核依据；请重新运行质量校验。` };
+        }
+        return { kind: 'error', text: '用法: /paper-feedback add <主张ID> | <异议> | <证据线索>；/paper-feedback resolve <反馈ID> | <处理说明> | <复核依据>；或 /paper-feedback list' };
+      } catch (error) {
+        return { kind: 'error', text: error.message };
+      }
     },
   });
 

@@ -40,6 +40,7 @@ import { formatPaperQualityReport, validateDocxFile, validateMarkdownPaper } fro
 import { formatCrossReviewRounds, formatScientificReview, reviewScientificQuality, reviseSectionsFromReviews, type CrossReviewRound } from '../plugins/verification/scientific-quality-reviewer.js';
 import { exportToDocx } from '../plugins/export/docx-exporter.js';
 import { exportToLatex } from '../plugins/export/latex-exporter.js';
+import { readFeedback } from '../../config/dsh/web/paper-feedback.js';
 
 const STATE_FILE = 'paper-pipeline-state.json';
 const LOCK_FILE = 'paper-pipeline.lock.json';
@@ -887,9 +888,11 @@ export class PaperPipeline {
       this.outputPath('cover-letter.md'),
     ];
     const missing = required.filter((path) => !existsSync(path));
-    const checklist = `# Submission Readiness\n\n- [x] 联网选题与方向证据\n- [x] 跨学科迁移边界已传递到方案、大纲、正文和质量审查\n- [x] 冻结研究方案\n- [x] 实验数据验收\n- [x] 引用核验\n- [x] 终稿引用重新绑定与核验\n- [x] 独立科技质量审查\n- [${missing.includes(this.outputPath('research-integrity.md')) ? ' ' : 'x'}] 作者、基金、伦理、利益冲突及 AI 使用声明模板\n- [${missing.includes(this.outputPath('cover-letter.md')) ? ' ' : 'x'}] Cover letter 模板\n- [ ] 作者逐项确认声明、作者顺序、基金、伦理、利益冲突和目标期刊当天要求\n\nStatus: ${missing.length > 0 ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}\n`;
+    const openFeedback = readFeedback(this.outputDir).filter((item) => item.status === 'open');
+    const checklist = `# Submission Readiness\n\n- [x] 联网选题与方向证据\n- [x] 跨学科迁移边界已传递到方案、大纲、正文和质量审查\n- [x] 冻结研究方案\n- [x] 实验数据验收\n- [x] 引用核验\n- [x] 终稿引用重新绑定与核验\n- [x] 独立科技质量审查\n- [${openFeedback.length ? ' ' : 'x'}] 研究者异议已处理（待处理 ${openFeedback.length} 项）\n- [${missing.includes(this.outputPath('research-integrity.md')) ? ' ' : 'x'}] 作者、基金、伦理、利益冲突及 AI 使用声明模板\n- [${missing.includes(this.outputPath('cover-letter.md')) ? ' ' : 'x'}] Cover letter 模板\n- [ ] 作者逐项确认声明、作者顺序、基金、伦理、利益冲突和目标期刊当天要求\n\nStatus: ${missing.length > 0 || openFeedback.length > 0 ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}\n`;
     await writeFile(this.outputPath('submission-manifest.md'), checklist, 'utf8');
     if (missing.length > 0) throw new Error(`投稿前仍缺少产物: ${missing.join(', ')}`);
+    if (openFeedback.length > 0) throw new Error(`投稿前仍有 ${openFeedback.length} 项研究者异议未处理；查看 ${join(this.milestoneDir, 'research-feedback.jsonl')}`);
     console.log('投稿清单已生成；作者声明和实时期刊要求仍需人工确认。');
   }
 

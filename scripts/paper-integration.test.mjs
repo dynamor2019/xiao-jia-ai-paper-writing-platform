@@ -419,6 +419,7 @@ test('runtime sync resets a default RayinAI model when its credential is missing
     const { syncDshRuntime } = await import(`./sync-dsh-runtime.mjs?repair=${Date.now()}`);
     const result = await syncDshRuntime();
     const settings = await readFile(join(root, 'settings.yaml'), 'utf8');
+    assert.match(await readFile(join(root, 'profiles', 'web', 'paper-feedback.js'), 'utf8'), /readFeedback/);
     assert.equal(result.repairedDefaultModel, true);
     assert.match(settings, /provider: deepseek-official/);
     assert.match(settings, /model: deepseek-v4-flash/);
@@ -555,6 +556,51 @@ test('a stale paper project lock can be reclaimed', async () => {
     release();
     await assert.rejects(readFile(lockPath), { code: 'ENOENT' });
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('research feedback stays in the project and blocks submission until resolved', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-feedback-'));
+  const previousRoot = process.env.PAPER_DATA_ROOT;
+  try {
+    process.env.PAPER_DATA_ROOT = root;
+    const projectDir = join(root, 'output', 'paper-projects', 'paper-feedback-test');
+    const milestones = join(projectDir, 'milestones');
+    const runDir = join(root, '.dsh-state', 'paper-runs');
+    await mkdir(milestones, { recursive: true });
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(milestones, 'claim-evidence-matrix.md'), '# Matrix\n| ID | Claim | Source |\n|---|---|---|\n| C1.1 | Claim A | paper-1 |\n');
+    await writeFile(join(runDir, 'feedback-session.json'), JSON.stringify({ outputDir: projectDir, stage: 'results-writing', status: 'completed' }));
+    const { apply } = await import(`../config/dsh/web/paper-command.js?feedback=${Date.now()}`);
+    const commands = new Map();
+    apply({ commands: { register: (command) => commands.set(command.name, command) }, goals: { get: () => undefined }, systemPrompt: { context: () => {} }, effect: () => {} });
+    const agent = { id: 'feedback-session' };
+    const evidence = await commands.get('paper-evidence').handler({ agent, rawInput: 'C1.1' });
+    assert.match(evidence.text, /paper-1/);
+    const added = await commands.get('paper-feedback').handler({ agent, rawInput: 'add C1.1 | 样本量不符 | Table 2' });
+    assert.equal(added.kind, 'success');
+    const list = await commands.get('paper-feedback').handler({ agent, rawInput: 'list' });
+    assert.match(list.text, /待处理.*C1\.1/);
+    const blocked = await commands.get('paper-submission').handler({ agent });
+    assert.match(blocked.text, /BLOCKED 研究者异议已处理/);
+    const pipeline = new PaperPipeline('Feedback test', undefined, { outputDir: projectDir });
+    await assert.rejects(pipeline.stageSubmissionReadiness());
+    const manifest = await readFile(join(milestones, 'submission-manifest.md'), 'utf8');
+    assert.match(manifest, /\[ \] 研究者异议已处理（待处理 1 项）/);
+    assert.match(manifest, /Status: BLOCKED/);
+    const id = list.text.match(/待处理 ([a-f0-9-]+)/)?.[1];
+    assert.ok(id);
+    const resolved = await commands.get('paper-feedback').handler({ agent, rawInput: `resolve ${id} | 已更正样本量 | Table 2 与质量报告` });
+    assert.equal(resolved.kind, 'success');
+    const after = await commands.get('paper-feedback').handler({ agent, rawInput: 'list' });
+    assert.match(after.text, /已处理.*C1\.1/);
+    assert.match(after.text, /复核: Table 2 与质量报告/);
+    const submission = await commands.get('paper-submission').handler({ agent });
+    assert.match(submission.text, /PASS 研究者异议已处理/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.PAPER_DATA_ROOT;
+    else process.env.PAPER_DATA_ROOT = previousRoot;
     await rm(root, { recursive: true, force: true });
   }
 });

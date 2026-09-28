@@ -9,18 +9,26 @@ description: 设计、生成和审计科技论文图表；当论文需要结果�
 
 ## Figures for Papers 资源
 
-DSH 已接入 ChenLiu-1996/figures4papers，默认位置为 `F:\DSH data\resources\figures4papers`。生成 Matplotlib 论文图时，除本 skill 的 Nature 门禁外，必须按需读取并采用该资源的科研图设计约束：
+DSH 已接入 ChenLiu-1996/figures4papers。先按 `FIGURES4PAPERS_HOME` 定位；未设置时使用数据目录（`PAPER_DATA_ROOT` 或平台默认数据目录）下的 `resources/figures4papers`，不得假定客户有 `F:` 盘。资源缺失时报告并继续使用项目内的出版样式与门禁，不得静默跳过图形验收。生成 Matplotlib 论文图时，按需读取该资源的科研图设计约束：
 
-- 必读：`F:\DSH data\resources\figures4papers\scientific-figure-making\SKILL.md`
-- 必读：`F:\DSH data\resources\figures4papers\scientific-figure-making\references\api.md`
-- 必读：`F:\DSH data\resources\figures4papers\scientific-figure-making\references\design-theory.md`
-- 当生成 grouped bar、趋势图、热图、多面板或常见论文图型时，再读取 `F:\DSH data\resources\figures4papers\scientific-figure-making\references\common-patterns.md`
+- 必读：`<figures4papers目录>/scientific-figure-making/SKILL.md`
+- 必读：`<figures4papers目录>/scientific-figure-making/references/api.md`
+- 必读：`<figures4papers目录>/scientific-figure-making/references/design-theory.md`
+- 当生成 grouped bar、趋势图、热图、多面板或常见论文图型时，再读取 `<figures4papers目录>/scientific-figure-making/references/common-patterns.md`
 
-默认使用 `F:\dsh\scripts\figures4papers_style.py` 的 `PALETTE`、`FigureStyle` 和图形 helper 作为 Matplotlib 风格入口；若 figures4papers 示例风格与目标期刊、Nature 门禁或本 skill 冲突，以更严格的出版门禁为准。该资源只负责提高图形设计和绘图代码质量，最终交付仍必须通过 `scientific_figure_guard.finalize_figure()`。
+默认使用当前项目 `<项目目录>/scripts/figures4papers_style.py` 的 `PALETTE`、`FigureStyle` 和图形 helper 作为 Matplotlib 风格入口；若 figures4papers 示例风格与目标期刊、Nature 门禁或本 skill 冲突，以更严格的出版门禁为准。该资源只负责提高图形设计和绘图代码质量，最终交付仍必须通过 `scientific_figure_guard.finalize_figure()`。
 
 ## 先定义信息任务
 
 每个图表先写一句要回答的问题，再选择形式；不能提升读者判断效率的图表应删除或合并。图表必须来自可追溯数据，不得手工改动数值或只保留有利结果。
+
+## 数据契约与选图
+
+绘图前为每张图核对观察单位、分组与配对/重复测量关系、变量尺度和单位、变换方式、样本量定义、缺失/排除记录、统计口径及不确定性表示，并映射到当前结果文件的字段与哈希。缺少会改变图形含义的字段或分析结果时停止该图，不得从图像、正文或模型推断补齐。无明确研究问题时先回到研究方案确定问题，不生成泛化的“漂亮图”。
+
+按问题和数据结构选图：个体配对变化保留配对关系，分布与离群值不只给均值柱，效应比较说明区间和基线，时间趋势保留时间尺度，模型评估注明数据划分、种子/折数与指标定义。图型不能代替统计检验；任何变换、聚合或可视化抽样都须事先说明其用途与保留规则，并保留可核查的全量结果，不能因图形不显著而换图或过滤数据。
+
+复用现有绘图脚本前，先比较问题、观测单位、数据维度、统计含义和输出形式；仅当数据契约一致时复用脚本并替换字段映射。结构相近但不等价时只借布局，含义不同时只借配色/字体，均不匹配时重新设计。参考图的外观不能决定统计口径、面板数或是否省略结果。沿用稿件和原图的成图语言，变量 ID、单位与标准缩写不机械翻译。
 
 绘图脚本必须从 `milestones/reproducibility/results/` 的机器结果读取数据并核对 SHA256；禁止调用随机数生成实例、按论文均值反推散点、手填结果数组、硬编码统计量或从旧图/正文抄回数值。随机数只允许用于分析方案预先声明的实验本身，不得在绘图阶段生成“观测”。图表必须呈现完整预设组别和运行，包括负效应、零效应、失败及异常结果；任何排除都要引用冻结规则并提供敏感性检查。
 
@@ -67,7 +75,9 @@ DSH 已接入 ChenLiu-1996/figures4papers，默认位置为 `F:\DSH data\resourc
 
 ```python
 import sys
-sys.path.insert(0, r"F:\dsh\scripts")
+from pathlib import Path
+
+sys.path.insert(0, str(Path.cwd() / "scripts"))  # 论文流水线从项目根目录运行
 from scientific_figure_guard import apply_publication_style, finalize_figure
 from figures4papers_style import FigureStyle, apply_figures4papers_style
 
@@ -105,4 +115,4 @@ finalize_figure(
 
 ## 可追溯性
 
-维护 `milestones/reproducibility/figures/figure-manifest.tsv`：`id | question | source_data | script | png | pdf | qa_report | caption_title | caption_text | legend_position | panel_count | panel_rationale | affected_claim_ids | semantic_change | manuscript_callout | text_sync_status | visual_qa_status | status`。每个主图表必须能由脚本重建；只有程序检查、模型视觉复核及图文同步均 PASS 后，`status` 才能填写 PASS，并通过正文数字、图表数字和统计审计三方一致性检查。
+维护 `milestones/reproducibility/figures/figure-manifest.tsv`：`id | question | source_data | script | png | pdf | qa_report | caption_title | caption_text | legend_position | panel_count | panel_rationale | affected_claim_ids | semantic_change | manuscript_callout | text_sync_status | visual_qa_status | status`。`source_data` 须定位结果文件、哈希和字段映射；图注或 QA 记录须写明每个定量面板的 n 定义、中心量、离散度/区间、检验与多重比较处理（如适用），缺项标记待核而非猜测。每个主图表必须能由脚本重建；只有程序检查、模型视觉复核及图文同步均 PASS 后，`status` 才能填写 PASS，并通过正文数字、图表数字和统计审计三方一致性检查。
