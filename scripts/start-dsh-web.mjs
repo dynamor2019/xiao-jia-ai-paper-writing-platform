@@ -231,7 +231,7 @@ function runDsh() {
 
 function openFreshBrowser() {
   if (!defaultBrowser) return;
-  const browser = spawn(defaultBrowser, ['--start-fullscreen', resolveBrowserUrl()], {
+  const browser = spawn(defaultBrowser, ['--new-window', '--start-fullscreen', resolveBrowserUrl()], {
     detached: true,
     stdio: 'ignore',
   });
