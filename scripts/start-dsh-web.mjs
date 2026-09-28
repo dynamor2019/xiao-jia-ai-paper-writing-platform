@@ -11,6 +11,7 @@ import { patchEmptyToolCallRetry } from './patch-dsh-empty-tool-call.mjs';
 import { patchWebAllLite } from './patch-dsh-web-all-lite.mjs';
 import { patchJournalSelector } from './patch-dsh-journal-ui.mjs';
 import { patchTodoStoppedStatus } from './patch-dsh-todo-status.mjs';
+import { patchModelCatalog } from './patch-dsh-model-catalog.mjs';
 import { patchUniverExecuteSchema } from './patch-dsh-univer-execute.mjs';
 import { patchWorkbenchDocxPreview } from './patch-dsh-workbench-docx-preview.mjs';
 import { patchWorkbenchFloating } from './patch-dsh-workbench-floating.mjs';
@@ -132,6 +133,7 @@ console.log(`快捷继续按钮补丁已检查（${runStartupPatch('快捷继续
 console.log(`编辑失败恢复补丁已检查（${runStartupPatch('编辑失败恢复补丁', patchEditRecovery) ? '已更新' : '无需更新'}）。`);
 console.log(`空工具调用重试补丁已检查（${runStartupPatch('空工具调用重试补丁', patchEmptyToolCallRetry) ? '已更新' : '无需更新'}）。`);
 console.log(`任务停止状态补丁已检查（${runStartupPatch('任务停止状态补丁', patchTodoStoppedStatus) ? '已更新' : '无需更新'}）。`);
+console.log(`模型列表加载补丁已检查（${runStartupPatch('模型列表加载补丁', patchModelCatalog) ? '已更新' : '无需更新'}）。`);
 
 mkdirSync(stateDir, { recursive: true });
 mkdirSync(tempDir, { recursive: true });
