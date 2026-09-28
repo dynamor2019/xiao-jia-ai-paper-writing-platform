@@ -318,6 +318,31 @@ test('paper model settings use Web credentials when env keys are absent', async 
   }
 });
 
+test('runtime sync resets a default RayinAI model when its credential is missing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-dsh-home-'));
+  const previousHome = process.env.DSH_HOME;
+  const saved = saveEnv(['OPENAI_API_KEY', 'ANTHROPIC_API_KEY']);
+  try {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.DSH_HOME = root;
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, 'settings.yaml'), 'agent-default-model:\n  provider: rayinai\n  model: gpt-5.6-terra\n');
+    await writeFile(join(root, '.credentials.yaml'), 'refs:\n  DEEPSEEK_API_KEY: deepseek-secret\n');
+    const { syncDshRuntime } = await import(`./sync-dsh-runtime.mjs?repair=${Date.now()}`);
+    const result = await syncDshRuntime();
+    const settings = await readFile(join(root, 'settings.yaml'), 'utf8');
+    assert.equal(result.repairedDefaultModel, true);
+    assert.match(settings, /provider: deepseek-official/);
+    assert.match(settings, /model: deepseek-v4-flash/);
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previousHome;
+    restoreSavedEnv(saved);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('a CLI project can be attached to a Web session', async () => {
   const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-attach-'));
   const previousRoot = process.env.PAPER_DATA_ROOT;

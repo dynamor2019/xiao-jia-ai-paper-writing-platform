@@ -1,12 +1,21 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { parse, stringify } from 'yaml';
 
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
 
 const DSH_HOME = resolve(process.env.DSH_HOME || join(homedir(), '.dsh'));
+const SAFE_DEFAULT_MODEL = { provider: 'deepseek-official', model: 'deepseek-v4-flash' };
+const PROVIDER_CREDENTIAL_ENV = {
+  rayinai: 'OPENAI_API_KEY',
+  'rayinai-claude': 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_OFFICIAL_API_KEY',
+  anthropic: 'ANTHROPIC_OFFICIAL_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+};
 
 async function copyRuntimeFile(source, target) {
   if (!existsSync(source)) throw new Error(`运行时源码不存在: ${source}`);
@@ -33,6 +42,30 @@ async function removeConflictingFlatSkill(targetRoot, skillName) {
   await rm(flatPath);
 }
 
+function readYamlFile(path) {
+  return existsSync(path) ? parse(readFileSync(path, 'utf8')) || {} : {};
+}
+
+async function repairMissingDefaultModelCredential() {
+  const settingsPath = join(DSH_HOME, 'settings.yaml');
+  if (!existsSync(settingsPath)) return false;
+  const settings = readYamlFile(settingsPath);
+  const current = settings['agent-default-model'];
+  const provider = typeof current?.provider === 'string' ? current.provider : '';
+  if (!provider || defaultModelHasCredential(provider)) return false;
+  settings['agent-default-model'] = { ...SAFE_DEFAULT_MODEL };
+  await writeFile(settingsPath, stringify(settings), 'utf8');
+  return true;
+}
+
+function defaultModelHasCredential(provider) {
+  const envName = PROVIDER_CREDENTIAL_ENV[provider];
+  if (!envName) return true;
+  if (process.env[envName]?.trim()) return true;
+  const credentials = readYamlFile(join(DSH_HOME, '.credentials.yaml'));
+  return typeof credentials.refs?.[envName] === 'string' && credentials.refs[envName].trim().length > 0;
+}
+
 export async function syncDshRuntime() {
   const skillSource = join(PROJECT_ROOT, '.dsh', 'skills');
   const skillTarget = join(DSH_HOME, 'skills');
@@ -55,10 +88,12 @@ export async function syncDshRuntime() {
     await copyRenderedRuntimeFile(join(presetSource, file), join(presetTarget, file));
   }
 
-  return { dshHome: DSH_HOME, skills: skills.length };
+  const repairedDefaultModel = await repairMissingDefaultModelCredential();
+  return { dshHome: DSH_HOME, skills: skills.length, repairedDefaultModel };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const result = await syncDshRuntime();
   console.log(`DSH 运行时已同步: ${result.skills} 个论文 skills -> ${result.dshHome}`);
+  if (result.repairedDefaultModel) console.log('已将缺少凭据的默认模型重置为 DeepSeek 默认模型。');
 }
