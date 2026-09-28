@@ -144,6 +144,69 @@ test('Web routing repairs an old session that still requests RayinAI without a k
   }
 });
 
+test('Web routing retries an unsupported model selected in an old session', async () => {
+  const saved = saveEnv(['OPENAI_API_KEY']);
+  process.env.OPENAI_API_KEY = 'test-openai-key';
+  const handlers = new Map();
+  const agent = {
+    session: { header: {}, seq: 1, snapshotEvents: () => [{ type: 'model/selection' }] },
+  };
+  try {
+    installWebModelRouter({
+      on: (event, handler) => handlers.set(event, handler),
+      get: () => ({ listProviders: () => [{ id: 'rayinai' }] }),
+      logger: { warn: () => {} },
+    }, async () => []);
+    const request = () => handlers.get('agent/request')({ agent, turn: 1, step: 1 }, async () => ({
+      provider: 'rayinai', model: 'gpt-5.6-terra', reasoningEffort: 'high',
+    }));
+    assert.equal((await request()).model, 'gpt-5.6-terra');
+    const retry = await handlers.get('agent/request-error')({
+      agent, turn: 1, step: 1,
+      failure: { code: 'PI_AI_ERROR', message: 'Model "gpt-5.6-terra" is not supported by any configured account in this group' },
+    }, async () => undefined);
+    assert.deepEqual(retry, { kind: 'retry' });
+    assert.deepEqual(await request(), { provider: 'rayinai', model: 'gpt-5.6-luna' });
+  } finally {
+    restoreSavedEnv(saved);
+  }
+});
+
+test('Web routing skips a rejected task model when the old session selected it', async () => {
+  const saved = saveEnv(['OPENAI_API_KEY']);
+  process.env.OPENAI_API_KEY = 'test-openai-key';
+  const handlers = new Map();
+  const agent = {
+    session: { header: {}, seq: 1, snapshotEvents: () => [{ type: 'model/selection' }] },
+  };
+  try {
+    installWebModelRouter({
+      on: (event, handler) => handlers.set(event, handler),
+      get: () => ({ listProviders: () => [{ id: 'rayinai' }] }),
+      logger: { warn: () => {} },
+    }, async () => [
+      { provider: 'openai', model: 'gpt-5.6-terra' },
+      { provider: 'openai', model: 'gpt-5.6-sol' },
+    ]);
+    handlers.get('agent/inbox/claimed')({
+      agent, turn: 1,
+      message: { source: { kind: 'user' }, content: [{ type: 'text', text: '写论文' }] },
+    });
+    const request = () => handlers.get('agent/request')({ agent, turn: 1, step: 1 }, async () => ({
+      provider: 'rayinai', model: 'gpt-5.6-terra',
+    }));
+    await request();
+    const retry = await handlers.get('agent/request-error')({
+      agent, turn: 1, step: 1,
+      failure: { code: 'PI_AI_ERROR', message: 'Model "gpt-5.6-terra" is not supported' },
+    }, async () => undefined);
+    assert.deepEqual(retry, { kind: 'retry' });
+    assert.deepEqual(await request(), { provider: 'rayinai', model: 'gpt-5.6-sol' });
+  } finally {
+    restoreSavedEnv(saved);
+  }
+});
+
 test('selected DID method requires empirical evidence and blocks changed evidence before writing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'xiaojia-empirical-gate-'));
   try {

@@ -43,7 +43,7 @@ const DEFAULT_FALLBACK_ROUTES: Record<TaskType, ModelRoute> = {
   protocol: { provider: 'openai', model: 'gpt-5.6-sol' },
   summary: { provider: 'claude', model: 'claude-sonnet-5' },
   outline: { provider: 'openai', model: 'gpt-5.6-sol' },
-  writing: { provider: 'openai', model: 'gpt-5.6-terra' },
+  writing: { provider: 'openai', model: 'gpt-5.6-sol' },
   coherence: { provider: 'claude', model: 'claude-sonnet-5' },
   citation: { provider: 'claude', model: 'claude-sonnet-5' },
   quality: { provider: 'openai', model: 'gpt-5.6-sol' },
@@ -84,7 +84,7 @@ export function getDefaultModel(provider: ModelProvider): string {
   if (provider === 'claude') {
     return process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
   }
-  return process.env.OPENAI_MODEL || 'gpt-5.6-terra';
+  return process.env.OPENAI_MODEL || 'gpt-5.6-luna';
 }
 
 /** 获取 provider 的 API Key */

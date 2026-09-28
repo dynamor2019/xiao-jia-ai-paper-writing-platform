@@ -39,7 +39,7 @@ export const dshConfig = {
       config: {
         baseUrl: process.env.OPENAI_BASE_URL || 'https://code.rayinai.com/v1',
         apiKey: process.env.OPENAI_API_KEY || '',
-        model: process.env.OPENAI_MODEL || 'gpt-5.6-terra',
+        model: process.env.OPENAI_MODEL || 'gpt-5.6-luna',
         reasoningEffort: process.env.OPENAI_REASONING_EFFORT || 'max',
       },
     },
@@ -59,7 +59,7 @@ export const dshConfig = {
       config: {
         baseUrl: process.env.OPENAI_BASE_URL || 'https://code.rayinai.com/v1',
         apiKey: process.env.OPENAI_API_KEY || '',
-        model: 'gpt-4o-mini',
+        model: 'gpt-5.6-luna',
       },
     },
   ],

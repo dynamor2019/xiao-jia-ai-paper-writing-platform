@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 const name = 'paper-web-model-router';
 const PROJECT_DIR = resolve(process.env.DSH_PAPER_PROJECT_DIR || String.raw`__DSH_PAPER_PROJECT_DIR__`);
-const DEFAULT_ROUTE = { provider: 'rayinai', model: 'gpt-5.6-terra' };
+const DEFAULT_ROUTE = { provider: 'rayinai', model: 'gpt-5.6-luna' };
 const PROVIDERS = { openai: 'rayinai', claude: 'rayinai-claude' };
 const PROVIDER_KEYS = { rayinai: 'OPENAI_API_KEY', 'rayinai-claude': 'ANTHROPIC_API_KEY' };
 const SAFE_ROUTE = { provider: 'deepseek-official', model: 'deepseek-v4-flash' };
@@ -65,7 +65,12 @@ function defaultRoute() {
 
 function canFailOver(failure) {
   return ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'EMPTY_RESPONSE'].includes(failure?.code)
-    || /model.*(?:not found|unsupported|unavailable)/i.test(failure?.message || '');
+    || modelIsUnavailable(failure);
+}
+
+function modelIsUnavailable(failure) {
+  return failure?.code === 'model_not_found'
+    || /model.*(?:not\s+supported|not found|unsupported|unavailable)/i.test(failure?.message || '');
 }
 
 export function installWebModelRouter(ctx, routeCandidates) {
@@ -103,6 +108,12 @@ export function installWebModelRouter(ctx, routeCandidates) {
 
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
     const config = await next();
+    const pending = recovery.get(agent);
+    if (pending?.turn === turn && pending.step === step) {
+      attempted.set(agent, { turn, step, route: pending.route });
+      const { reasoningEffort: _previousEffort, ...rest } = config;
+      return { ...rest, ...pending.route };
+    }
     if (!providerHasCredential(config.provider)) {
       const task = activeTasks.get(agent)?.turn === turn ? activeTasks.get(agent).task : undefined;
       const candidates = task ? await routeCandidates(task) : [];
@@ -110,12 +121,16 @@ export function installWebModelRouter(ctx, routeCandidates) {
         || ctx.agentDefaultModel?.currentSelection?.()
         || SAFE_ROUTE;
       const fallback = providerHasCredential(route.provider) ? route : SAFE_ROUTE;
+      attempted.set(agent, { turn, step, route: fallback });
       const { reasoningEffort: _previousEffort, ...rest } = config;
       ctx.logger?.warn?.(`Web 模型缺少凭据: ${config.provider} -> ${fallback.provider}/${fallback.model}`);
       return { ...rest, ...fallback };
     }
     const selected = await selectedRoute(agent, turn, step);
-    if (!selected) return config;
+    if (!selected) {
+      attempted.set(agent, { turn, step, route: config });
+      return config;
+    }
     const { task, route } = selected;
     attempted.set(agent, { turn, step, route });
     if (config.provider === route.provider && config.model === route.model) return config;
@@ -127,11 +142,15 @@ export function installWebModelRouter(ctx, routeCandidates) {
   ctx.on('agent/request-error', async ({ agent, turn, step, failure }, next) => {
     const last = attempted.get(agent);
     const task = activeTasks.get(agent)?.turn === turn ? activeTasks.get(agent).task : undefined;
-    if (!task || last?.turn !== turn || last.step !== step || !canFailOver(failure)
-      || hasManualSelection(agent.session, scanned)) return next();
-    const candidates = await routeCandidates(task);
+    if (last?.turn !== turn || last.step !== step || !canFailOver(failure)
+      || (hasManualSelection(agent.session, scanned) && !modelIsUnavailable(failure))) return next();
+    const candidates = task ? await routeCandidates(task) : [];
     const used = candidates.findIndex((item) => PROVIDERS[item.provider] === last.route.provider && item.model === last.route.model);
-    const fallback = firstAvailableRoute(ctx, candidates.slice(used + 1));
+    const remaining = used < 0
+      ? candidates.filter((item) => PROVIDERS[item.provider] !== last.route.provider || item.model !== last.route.model)
+      : candidates.slice(used + 1);
+    const fallback = firstAvailableRoute(ctx, remaining)
+      || (modelIsUnavailable(failure) ? defaultRoute() : undefined);
     if (!fallback || (fallback.provider === last.route.provider && fallback.model === last.route.model)) return next();
     recovery.set(agent, { turn, step, route: fallback });
     ctx.logger?.warn?.(`Web 模型回退: ${last.route.provider}/${last.route.model} -> ${fallback.provider}/${fallback.model}`);
