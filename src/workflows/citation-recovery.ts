@@ -104,7 +104,7 @@ export async function recoverDraftCitations(
       }
       const assessment = await supportedRevision(candidate, evidence, options.cacheDir);
       if (!assessment.supported) {
-        feedback = `\n\nIndependent audit rejected the previous revision: ${assessment.reason}\nPrevious rejected revision:\n${candidate}\nDelete the unsupported assertions identified by this audit; do not merely remove reference markers. A shorter supported paragraph is preferable to unsupported background claims.`;
+        feedback = `\n\nIndependent audit rejected the previous revision: ${assessment.reason}\nPrevious rejected revision:\n${candidate}\nEVIDENCE-ONLY REVISION: return at most 100 words. Keep only assertions explicitly stated in the supplied evidence, with correct library markers. Delete entire sentences containing unsupported claims, even when uncited. Do not preserve the original narrative length, novelty claims, claimed literature gaps, general industry practice, carbon savings, field validation or supposed baseline strategies. Do not repair unsupported claims by presenting them as established background. Prefer a short source-backed paragraph; do not invent connective factual claims.`;
         continue;
       }
       paragraphs[index] = candidate.trim();
