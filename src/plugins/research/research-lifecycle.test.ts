@@ -6,7 +6,27 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { getModelClient } from '../../lib/model-client.js';
-import { discoverResearchTopic, searchScholarlyWorks, validateExperimentResults } from './research-lifecycle.js';
+import { createResearchProtocol, discoverResearchTopic, searchScholarlyWorks, validateExperimentResults } from './research-lifecycle.js';
+
+test('research protocol output budget stays within relay request limits', async () => {
+  const outputDir = await mkdtemp(join(tmpdir(), 'dsh-protocol-budget-'));
+  const client = getModelClient();
+  const originalGenerate = client.generate;
+  let capturedOptions: Parameters<typeof client.generate>[2];
+  client.generate = async (_systemPrompt, _userPrompt, options) => {
+    capturedOptions = options;
+    return 'Executable protocol.';
+  };
+  try {
+    const result = await createResearchProtocol('A bounded research question', [], new Map(), 'General journal rules', outputDir);
+    assert.equal(result.success, true);
+    assert.equal(capturedOptions?.maxTokens, 1800);
+    assert.match(await readFile(result.data!, 'utf8'), /Executable protocol/);
+  } finally {
+    client.generate = originalGenerate;
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
 
 test('discovery uses both disciplines, records boundaries, and never inserts a fixed topic', async () => {
   const outputDir = await mkdtemp(join(tmpdir(), 'dsh-topic-discovery-'));

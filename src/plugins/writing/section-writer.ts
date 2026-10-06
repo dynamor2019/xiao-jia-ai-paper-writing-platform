@@ -215,7 +215,7 @@ function buildLiteratureSupport(
 }
 
 /** 从正文中提取引用标记 */
-function extractCitations(content: string, papers: Paper[]): Citation[] {
+export function extractCitations(content: string, papers: Paper[]): Citation[] {
   const citations: Citation[] = [];
   const regex = /\[(\d+)\]/g;
   let match: RegExpExecArray | null;
@@ -235,19 +235,10 @@ function extractCitations(content: string, papers: Paper[]): Citation[] {
 }
 
 function citationContext(content: string, markerIndex: number): string {
-  const leftBoundary = Math.max(
-    content.lastIndexOf('。', markerIndex),
-    content.lastIndexOf('！', markerIndex),
-    content.lastIndexOf('？', markerIndex),
-    content.lastIndexOf('.', markerIndex),
-    content.lastIndexOf(';', markerIndex),
-    content.lastIndexOf('\n', markerIndex),
-  );
-  const rightCandidates = ['。', '！', '？', '.', ';', '\n']
-    .map((token) => content.indexOf(token, markerIndex))
-    .filter((index) => index >= 0);
-  const rightBoundary = rightCandidates.length > 0 ? Math.min(...rightCandidates) + 1 : content.length;
-  return content.slice(leftBoundary + 1, rightBoundary).trim().slice(0, 1000);
+  const leftBoundary = content.lastIndexOf('\n\n', markerIndex);
+  const rightBoundary = content.indexOf('\n\n', markerIndex);
+  return content.slice(leftBoundary < 0 ? 0 : leftBoundary + 2,
+    rightBoundary < 0 ? content.length : rightBoundary).trim();
 }
 
 function countWords(text: string): number {

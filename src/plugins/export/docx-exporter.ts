@@ -95,7 +95,7 @@ async function buildSubmissionMarkdown(
   options: ExportOptions,
   outputDir: string
 ): Promise<string> {
-  const markdown = buildMarkdown(sections, papers, options);
+  const markdown = renderCanonicalMarkdown(sections) || buildMarkdown(sections, papers, options);
   return embedSubmissionAssets(markdown, options, outputDir);
 }
 
@@ -353,3 +353,4 @@ export const docxExporterPlugin = {
     },
   },
 };
+import { renderCanonicalMarkdown } from '../../workflows/canonical-draft.js';

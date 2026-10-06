@@ -4,6 +4,9 @@
  * 功能：基于选题和文献笔记生成三级结构化论文大纲
  */
 
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { getModelClient } from '../../lib/model-client.js';
 import { isRecentPaper, selectBalancedLiterature } from '../../lib/literature-balance.js';
 import type { Outline, OutlineNode, Paper, PaperNote, ToolResult } from '../../types.js';
@@ -21,7 +24,7 @@ export async function generateOutline(
   topic: string,
   papers: Paper[],
   notes: Map<string, PaperNote>,
-  options: { targetWords?: number; language?: 'zh' | 'en'; journalInstructions?: string } = {}
+  options: { targetWords?: number; language?: 'zh' | 'en'; journalInstructions?: string; responseFile?: string } = {}
 ): Promise<ToolResult<Outline>> {
   try {
     const client = getModelClient();
@@ -63,6 +66,7 @@ ${literatureContext}
 
 如果某个节点缺少足够文献支撑，请在 argument 中明确写出“需作者补充证据”，不要把弱证据包装成强结论。
 大纲必须覆盖目标期刊要求的专门板块和审稿关注点；不得为了迎合期刊而编造结果。
+严格控制输出规模：所有层级合计最多24个节点，每个 argument 只用一个短句，不复制实验记录或表格。优先使用清晰的章节与小节；总字数分配仍须覆盖目标长度。输出必须是完整有效的 JSON，闭合全部数组和对象，不加说明、注释或代码围栏。
 
 输出 JSON 格式：
 {
@@ -71,18 +75,16 @@ ${literatureContext}
   "totalEstimatedWords": 总字数
 }`;
 
-    const response = await client.generate(SYSTEM_PROMPT, userPrompt, {
-      task: 'outline',
-      temperature: 0.5,
-      maxTokens: 4096,
-    });
+    const response = await outlineResponse(client, userPrompt, options.responseFile);
 
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      return { success: false, error: '大纲生成失败：无法解析模型返回的 JSON' };
+      return { success: false, error: '大纲生成失败：无法解析模型返回的 JSON；原始响应已保留（若配置了断点路径）' };
     }
 
     const outline = JSON.parse(jsonMatch[0]) as Outline;
+    restoreFlatHierarchy(outline);
+    validateOutline(outline);
     distributeRecentEvidence(outline.nodes, papers);
     return { success: true, data: outline };
   } catch (error) {
@@ -91,6 +93,65 @@ ${literatureContext}
       error: `大纲生成失败: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+/** Save the raw response before parsing; an unchanged rejected response never incurs another paid call. */
+async function outlineResponse(client: ReturnType<typeof getModelClient>, prompt: string, file?: string): Promise<string> {
+  const promptHash = createHash('sha256').update(SYSTEM_PROMPT + prompt).digest('hex');
+  if (file && existsSync(file)) {
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as { promptHash?: string; response?: string };
+    if (saved.promptHash === promptHash && typeof saved.response === 'string') return saved.response;
+  }
+  const response = await client.generate(SYSTEM_PROMPT, prompt, {
+      task: 'outline',
+      temperature: 0.5,
+      maxTokens: 4096,
+    });
+
+  if (file) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ promptHash, response }, null, 2) + '\n', 'utf8');
+  }
+  return response;
+}
+
+/** Validate a bounded tree before any writing request can consume it. */
+function validateOutline(outline: Outline): void {
+  if (!outline || typeof outline.topic !== 'string' || !Array.isArray(outline.nodes) || !outline.nodes.length) {
+    throw new Error('大纲必须包含主题与非空节点树');
+  }
+  const pending = [...outline.nodes], ids = new Set<string>();
+  let leaves = 0;
+  while (pending.length) {
+    const node = pending.shift()!;
+    if (!node || typeof node.id !== 'string' || !node.id || ids.has(node.id)
+      || typeof node.title !== 'string' || !node.title.trim() || !Array.isArray(node.supportingPapers)
+      || !Number.isFinite(node.estimatedWords) || node.estimatedWords <= 0
+      || ![1, 2, 3].includes(node.level) || (node.children && !Array.isArray(node.children))) {
+      throw new Error('大纲节点结构无效或ID重复；原始响应保留，未启动正文写作');
+    }
+    ids.add(node.id);
+    if (!node.children?.length) leaves++;
+    if (leaves > 24 || ids.size > 72) throw new Error('大纲超过24写作小节预算；不得无限扩展正文任务');
+    pending.push(...(node.children || []));
+  }
+}
+
+/** Recover explicitly numbered flat hierarchies without inventing or duplicating section content. */
+function restoreFlatHierarchy(outline: Outline): void {
+  if (!Array.isArray(outline?.nodes) || outline.nodes.some((node) => node.children?.length)) return;
+  const nodes = new Map(outline.nodes.map((node) => [node.id, node]));
+  if (nodes.size !== outline.nodes.length) throw new Error('大纲节点ID重复');
+  const roots: OutlineNode[] = [];
+  for (const node of outline.nodes) {
+    if (typeof node.id !== 'string') throw new Error('大纲节点ID必须是字符串');
+    const dot = node.id.lastIndexOf('.');
+    if (dot < 0) { roots.push(node); continue; }
+    const parent = nodes.get(node.id.slice(0, dot));
+    if (!parent || parent.level !== node.level - 1) throw new Error('平铺大纲缺少明确的直接上级，未自动猜测章节关系');
+    (parent.children ||= []).push(node);
+  }
+  outline.nodes = roots;
 }
 
 function distributeRecentEvidence(nodes: OutlineNode[], papers: Paper[]): void {

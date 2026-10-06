@@ -3,8 +3,9 @@ import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 
 import { resolve } from 'node:path';
 
 import { resolvePaperModelEnv } from './paper-model-env.mjs';
+import { isRecoverablePaperFailure, resolveMaxRecoveries } from './paper-retry-policy.mjs';
 
-const MAX_RECOVERIES = Number(process.env.PAPER_BACKGROUND_MAX_RECOVERIES || 72);
+const MAX_RECOVERIES = resolveMaxRecoveries(process.env.PAPER_BACKGROUND_MAX_RECOVERIES);
 const RETRY_BASE_MS = Number(process.env.PAPER_BACKGROUND_RETRY_BASE_MS || 60_000);
 const RETRY_MAX_MS = Number(process.env.PAPER_BACKGROUND_RETRY_MAX_MS || 900_000);
 
@@ -29,10 +30,6 @@ function appendLog(path, text) {
 
 function delay(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
-}
-
-function isRecoverableLog(text) {
-  return /中转站上游暂不可用|Service temporarily unavailable|Connection error|TRANSPORT|fetch failed|ECONNRESET|ETIMEDOUT|TimeoutError|operation was aborted|aborted due to timeout|HTTP 408|HTTP 409|HTTP 429|HTTP 5\d\d|\[5\d\d\]|\[429\]|EMPTY_RESPONSE|completed with no visible content/i.test(text);
 }
 
 function retryDelayMs(recoveryCount) {
@@ -112,7 +109,7 @@ async function runPipelineUntilSettled() {
       return;
     }
 
-    if (isRecoverableLog(recentOutput) && recoveryCount < MAX_RECOVERIES) {
+    if (isRecoverablePaperFailure(recentOutput) && recoveryCount < MAX_RECOVERIES) {
       recoveryCount += 1;
       const waitMs = retryDelayMs(recoveryCount);
       const resumeAt = new Date(Date.now() + waitMs).toISOString();

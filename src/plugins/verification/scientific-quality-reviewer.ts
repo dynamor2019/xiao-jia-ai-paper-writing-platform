@@ -1,6 +1,8 @@
 import { getModelClient } from '../../lib/model-client.js';
+import { createHash } from 'node:crypto';
 import type { TaskType } from '../../config/model-routing.js';
 import type { Section, ToolResult } from '../../types.js';
+import { canonicalRevisionIsSafe, renderCanonicalMarkdown } from '../../workflows/canonical-draft.js';
 
 export interface ScientificReviewFinding {
   category: 'theory' | 'methods' | 'experiments' | 'presentation' | 'reproducibility' | 'consistency' | 'references';
@@ -45,9 +47,9 @@ export async function reviewScientificQuality(
 ): Promise<ToolResult<ScientificReview>> {
   try {
     const response = await getModelClient().generate(
-      SYSTEM_PROMPT,
+      `${SYSTEM_PROMPT}\nKeep the JSON compact: at most five highest-priority actionable findings, under 700 words. Do not certify source verification or visual inspection you did not perform.`,
       `Target journal constraints:\n${journalInstructions || 'General scientific journal'}\n\nManuscript:\n${buildReviewManuscript(sections)}`,
-      { task, temperature: 0, maxTokens: 5000, timeoutMs: 120000, maxAttempts: 1, minOutputChars: 600 }
+      { task, temperature: 0, maxTokens: 5000, timeoutMs: 120000, maxAttempts: 1, minOutputChars: 20 }
     );
     return { success: true, data: parseReview(response) };
   } catch (error) {
@@ -58,26 +60,48 @@ export async function reviewScientificQuality(
 export async function reviseSectionsFromReviews(
   sections: Section[],
   reviews: ScientificReview[],
-  journalInstructions: string
+  journalInstructions: string,
+  saveProgress?: (sections: Section[]) => void
 ): Promise<ToolResult<{ sections: Section[]; summary: string }>> {
   try {
-    const response = await getModelClient().generate(
-      'You are the original manuscript writing model. Revise the manuscript conservatively according to reviewer findings. Do not add new data, citations, methods, or results. If evidence is missing, narrow or qualify the claim. Return strict JSON only with {"summary":"...","sections":[{"id":"...","content":"..."}]}.',
-      `Target journal constraints:\n${journalInstructions || 'General scientific journal'}\n\nReviewer findings:\n${formatReviewBundle(reviews)}\n\nManuscript:\n${buildRevisionManuscript(sections)}`,
-      { task: 'writing', temperature: 0.1, maxTokens: 9000, timeoutMs: 120000, maxAttempts: 1, minOutputChars: 300 }
-    );
-    const parsed = parseRevision(response);
-    const revisedSections = sections.map((section) => {
-      const revision = parsed.sections.find((item) => item.id === section.id);
-      if (!revision?.content?.trim()) return section;
-      return {
-        ...section,
-        content: revision.content.trim(),
-        wordCount: countWords(revision.content),
-        status: 'completed' as const,
-      };
-    });
-    return { success: true, data: { sections: revisedSections, summary: parsed.summary } };
+    if (reviews.every((review) => review.findings.length === 0)) {
+      return { success: true, data: { sections, summary: 'Reviewers requested no changes.' } };
+    }
+    const reviewHash = digest(JSON.stringify({ reviews, journalInstructions }));
+    const plan = await revisionPlan(sections, reviews, journalInstructions, reviewHash);
+    saveProgress?.(sections);
+    const revised = [...sections];
+    const unresolved: string[] = [];
+    const canonical = renderCanonicalMarkdown(sections) !== undefined;
+    for (const id of plan.ids) {
+      const index = revised.findIndex((section) => section.id === id);
+      const section = revised[index] as RevisionSection;
+      if (section.reviewRevision?.reviewHash === reviewHash && section.reviewRevision.contentHash === digest(section.content)) continue;
+      const cached = section.reviewRevisionRejected;
+      const canReuse = cached?.reviewHash === reviewHash && cached.originalHash === digest(section.content)
+        && canonicalRevisionIsSafe(section.content, cached.content);
+      if (canonical && cached?.reviewHash === reviewHash && cached.originalHash === digest(section.content) && !canReuse) {
+        unresolved.push(id);
+        console.warn(`[评审保护] ${id}: 保留原文，未解决意见留给最终科学审查`);
+        continue;
+      }
+      const content = canReuse ? cached!.content : await reviseSingleSection(section, revised, reviews, journalInstructions, () => saveProgress?.(revised));
+      if (canonical && !canonicalRevisionIsSafe(section.content, content)) {
+        section.reviewRevisionRejected = { reviewHash, originalHash: digest(section.content), content };
+        saveProgress?.(revised);
+        unresolved.push(id);
+        console.warn(`[评审保护] ${id}: 拒绝保护内容改动，保留原文；意见未解决`);
+        continue;
+      }
+      revised[index] = { ...section, content, citations: rebindSectionCitations(section, content),
+        reviewRevisionRejected: undefined, wordCount: countWords(content), status: 'completed',
+        reviewRevision: { reviewHash, contentHash: digest(content) } } as RevisionSection;
+      saveProgress?.(revised);
+      console.log(`[评审改稿] ${id} 已保存`);
+    }
+    const summary = [plan.summary, unresolved.length
+      ? `UNRESOLVED: unsafe revisions were refused for ${unresolved.join(', ')}; original prose retained. These findings require final scientific assessment, not a claim of repair.` : ''].filter(Boolean).join('\n');
+    return { success: true, data: { sections: revised, summary } };
   } catch (error) {
     return { success: false, error: `评审意见改稿失败: ${error instanceof Error ? error.message : String(error)}` };
   }
@@ -112,6 +136,8 @@ export function formatCrossReviewRounds(rounds: CrossReviewRound[]): string {
 }
 
 function buildReviewManuscript(sections: Section[]): string {
+  const canonical = renderCanonicalMarkdown(sections);
+  if (canonical) return canonical;
   let remaining = 42000;
   const chunks: string[] = [];
   for (const section of sections) {
@@ -123,8 +149,73 @@ function buildReviewManuscript(sections: Section[]): string {
   return chunks.join('\n\n');
 }
 
-function buildRevisionManuscript(sections: Section[]): string {
-  return sections.map((section) => `## id=${section.id} title=${section.title}\n\n${section.content.trim()}`).join('\n\n');
+interface RevisionPlan { reviewHash: string; ids: string[]; summary: string }
+type RevisionSection = Section & {
+  reviewRevisionPlan?: RevisionPlan;
+  reviewRevision?: { reviewHash: string; contentHash: string };
+  reviewRevisionRejected?: { reviewHash: string; originalHash: string; content: string };
+  reviewRevisionResponse?: { reviewHash: string; originalHash: string; raw: string };
+};
+
+/** Bind saved work to the exact review instructions and content. */
+function digest(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+/** Rebind existing source identities to each literal marker in the revised paragraph. */
+function rebindSectionCitations(section: Section, content: string): Section['citations'] {
+  const known = new Map(section.citations.map((citation) => [citation.marker, citation]));
+  return [...content.matchAll(/\[(\d+)\]/g)].map((match) => {
+    const citation = known.get(match[0]);
+    if (!citation) throw new Error(`Unbound citation ${match[0]} in revision of ${section.id}`);
+    return { ...citation, rawText: content, verified: false };
+  });
+}
+
+/** Plan minimal affected paragraphs before requesting any replacement prose. */
+async function revisionPlan(sections: Section[], reviews: ScientificReview[], instructions: string, reviewHash: string): Promise<RevisionPlan> {
+  const first = sections[0] as RevisionSection | undefined;
+  if (!first) throw new Error('Cannot revise an empty manuscript');
+  if (first.reviewRevisionPlan?.reviewHash === reviewHash) return first.reviewRevisionPlan;
+  const response = await getModelClient().generate(
+    'Plan targeted scientific revisions. Return only JSON {"summary":"...","ids":["existing-section-id"]}. Select only paragraphs directly needing changes for these findings, not unchanged paragraphs. Do not request new experiments or invent evidence. An unaddressable finding must remain explicitly unresolved in the summary; never claim it fixed. Do not return replacement prose.',
+    `Constraints:\n${instructions}\n\nFindings:\n${formatReviewBundle(reviews)}\n\nSections:\n${sections.map((section) => `id=${section.id} title=${section.title}\n${section.content}`).join('\n\n')}`,
+    { task: 'writing', temperature: 0, maxTokens: 1500, timeoutMs: 120000, maxAttempts: 1, minOutputChars: 20 }
+  );
+  const parsed = parseModelObject(response) as { summary: string; ids: unknown[] };
+  if (typeof parsed.summary !== 'string' || !Array.isArray(parsed.ids)
+    || parsed.ids.some((id: unknown) => typeof id !== 'string' || !sections.some((section) => section.id === id))
+    || new Set(parsed.ids).size !== parsed.ids.length) throw new Error('Invalid targeted revision plan');
+  const plan: RevisionPlan = { reviewHash, ids: parsed.ids as string[], summary: parsed.summary };
+  first.reviewRevisionPlan = plan;
+  return plan;
+}
+
+/** Bound each output to one existing paragraph so a whole-paper JSON cannot truncate. */
+async function reviseSingleSection(section: Section, sections: Section[], reviews: ScientificReview[], instructions: string, save?: () => void): Promise<string> {
+  const reviewHash = digest(JSON.stringify({ reviews, journalInstructions: instructions }));
+  const saved = (section as RevisionSection).reviewRevisionResponse;
+  if (saved?.reviewHash === reviewHash && saved.originalHash === digest(section.content)) {
+    try { return parseSingleRevision(saved.raw, section.id); } catch { /* An incomplete response needs a fresh bounded request. */ }
+  }
+  const protectedTokens = section.content.match(/\$[^$]*\$|\[[0-9]+\]|\b\d+(?:\.\d+)?\b|!\[[^\]]*\]\([^)]*\)/g) || [];
+  const response = await getModelClient().generate(
+    'Conservatively revise ONLY the specified paragraph. Return strict JSON {"summary":"...","sections":[{"id":"the-specified-id","content":"complete replacement paragraph"}]}. Return exactly one section, never the whole paper. Do not invent facts, citations, methods or results. Narrow unsupported claims instead. Preserve every number, formula, citation marker, image/table token and their order exactly. References elsewhere in the manuscript are NOT permission to add references to this paragraph. Keep ordinary prose paragraphs between 120 and 220 words; this limit does not apply to tables or figure blocks. If no safe change is justified, return the original paragraph unchanged.',
+    `Constraints:\n${instructions}\n\nFindings:\n${formatReviewBundle(reviews)}\n\nContext (read only):\n${buildReviewManuscript(sections)}\n\nExact protected token inventory: ${JSON.stringify(protectedTokens)}\n\nONLY editable paragraph: id=${section.id}\n${section.content}`,
+    { task: 'writing', temperature: 0.1, maxTokens: 9000, timeoutMs: 120000, maxAttempts: 1, minOutputChars: 20 }
+  );
+  (section as RevisionSection).reviewRevisionResponse = { reviewHash, originalHash: digest(section.content), raw: response };
+  save?.();
+  return parseSingleRevision(response, section.id);
+}
+
+/** Validate the entire parsed replacement before allowing any source write. */
+function parseSingleRevision(response: string, id: string): string {
+  const parsed = parseRevision(response);
+  if (parsed.sections.length !== 1 || parsed.sections[0].id !== id || typeof parsed.sections[0].content !== 'string' || !parsed.sections[0].content.trim()) {
+    throw new Error(`Expected exactly one nonempty revision for ${id}`);
+  }
+  return parsed.sections[0].content.trim();
 }
 
 function formatReviewBundle(reviews: ScientificReview[]): string {
@@ -132,8 +223,7 @@ function formatReviewBundle(reviews: ScientificReview[]): string {
 }
 
 function parseReview(raw: string): ScientificReview {
-  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  const parsed = JSON.parse(cleaned) as ScientificReview;
+  const parsed = parseModelObject(raw) as ScientificReview;
   if (!['pass', 'revise'].includes(parsed.verdict) || !Array.isArray(parsed.findings)) throw new Error('模型返回的质量审查 JSON 结构无效');
   for (const finding of parsed.findings) {
     if (!['theory', 'methods', 'experiments', 'presentation', 'reproducibility', 'consistency', 'references'].includes(finding.category)) {
@@ -144,10 +234,20 @@ function parseReview(raw: string): ScientificReview {
 }
 
 function parseRevision(raw: string): { summary: string; sections: Array<{ id: string; content: string }> } {
-  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  const parsed = JSON.parse(cleaned) as { summary: string; sections: Array<{ id: string; content: string }> };
+  const parsed = parseModelObject(raw) as { summary: string; sections: Array<{ id: string; content: string }> };
   if (typeof parsed.summary !== 'string' || !Array.isArray(parsed.sections)) throw new Error('模型返回的改稿 JSON 结构无效');
   return parsed;
+}
+
+/** Parse complete JSON, tolerating prose wrappers but never repairing malformed or truncated data. */
+function parseModelObject(raw: string): unknown {
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try { return JSON.parse(cleaned); } catch (error) {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start < 0 || end < start) throw error;
+    return JSON.parse(cleaned.slice(start, end + 1));
+  }
 }
 
 function countWords(content: string): number {

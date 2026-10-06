@@ -89,14 +89,14 @@ async function verifyBatch(
       return `[${idx + 1}] ID: ${paper!.id}
    标题: ${paper!.title}
    年份: ${paper!.year}
-   摘要/核心发现: ${(note?.keyFindings || paper!.abstract).slice(0, 500)}
+   摘要/核心发现: ${(note?.keyFindings || paper!.abstract).slice(0, 20000)}
    可引用点: ${note?.citablePoints?.slice(0, 4).join('; ') || '无结构化笔记'}`;
     })
     .join('\n\n');
 
   const citationsList = reviewable
     .map(({ citation }, i) => `引用${i + 1}: marker=${citation.marker}, paperId=${citation.paperId}
-   引用所在句: ${citation.rawText.slice(0, 800)}`)
+   引用所在句: ${citation.rawText.slice(0, 6000)}`)
     .join('\n');
 
   const userPrompt = `请核验以下引用。

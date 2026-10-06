@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 
 import { getModelClient } from '../../lib/model-client.js';
 import type { Paper, PaperNote, ToolResult } from '../../types.js';
+import { conditionalNetworkRows, isConditionalNetwork } from './conditional-network-results.js';
 import { formatTopicEvidence, validateResearchDirection, validateTopicReview, type ResearchDirection, type TopicReview } from './topic-evaluation.js';
 
 const execAsync = promisify(exec);
@@ -115,9 +116,9 @@ export async function createResearchProtocol(topic: string, papers: Paper[], not
   try {
     const evidence = papers.slice(0, 30).map((paper) => `${paper.id}: ${paper.title}; ${notes.get(paper.id)?.keyFindings || paper.abstract.slice(0, 300)}`).join('\n');
     const protocol = await getModelClient().generate(
-      'You are an independent methods editor. Produce an executable research protocol. Never fabricate data. Explicitly mark missing inputs BLOCKED.',
+      'You are an independent methods editor. Produce a concise, executable research protocol using compact bullets or tables. Include every required item, never fabricate data, and explicitly mark missing inputs BLOCKED.',
       `Topic: ${topic}\nJournal: ${journalInstructions}\nEvidence:\n${evidence}\n\nWrite Markdown with: research question; falsifiable hypotheses; variables and operational definitions; datasets/sampling; explicit real/synthetic/simulated data labels; frozen inclusion/exclusion rules; baselines and controls; ablations; sensitivity/robustness; statistical analysis and uncertainty; causal-identification limits; leakage prevention; compute/software/seeds; ethics and data governance; figures/tables planned; acceptance criteria; failure/stop rules; reproducibility outputs; result-provenance schema linking every numeric claim to a machine output.`,
-      { task: 'protocol', temperature: 0.1, maxTokens: 6000 },
+      { task: 'protocol', temperature: 0.1, maxTokens: 1800 },
     );
     const path = resolve(outputDir, 'analysis-plan.md');
     await mkdir(dirname(path), { recursive: true });
@@ -205,7 +206,8 @@ function parseResults(content: string, extension: string): ParsedResults {
     return { headers: records[0] || [], rows: records.slice(1) };
   }
   const value = JSON.parse(content) as unknown;
-  const records = Array.isArray(value) ? value : findJsonRecords(value);
+  const records = isConditionalNetwork(value) ? conditionalNetworkRows(value)
+    : Array.isArray(value) ? value : findJsonRecords(value);
   if (!records || records.length === 0 || records.some((row) => !isRecord(row))) {
     throw new Error('JSON 结果必须是对象数组，或在 results/data/records 字段中包含对象数组');
   }

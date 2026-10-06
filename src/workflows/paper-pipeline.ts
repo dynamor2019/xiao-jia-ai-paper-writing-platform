@@ -20,10 +20,16 @@ import { join, extname, basename, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { createInitialState } from '../config/dsh.config.js';
+import { polishWithCheckpoints } from './polish-checkpoint.js';
+import { runQualityReviewRounds } from './quality-review-progress.js';
+import { assertPrimaryExperimentScope, researchInputInstructions } from './research-input-policy.js';
+import { conditionalNetworkEvidence, isConditionalNetwork } from '../plugins/research/conditional-network-results.js';
+import { integrateExperiment, integratedEvidence, integratedProtocol, type ExperimentIntegration } from './experiment-integration.js';
+import { reconcileWritingStages, writingTasks } from './writing-stage-scope.js';
 import { literatureRecencyStats, MIN_RECENT_REFERENCE_SHARE, selectBalancedLiterature } from '../lib/literature-balance.js';
 import { getRoute, printRoutingTable } from '../config/model-routing.js';
 import { formatJournalInstructions, getJournalProfile, listJournalProfiles, type JournalProfile } from '../config/journal-profiles.js';
-import type { PipelineState, PipelineStage, Paper, PaperNote, Outline, Section } from '../types.js';
+import type { PipelineState, PipelineStage, Paper, PaperNote, Outline, OutlineNode, Section } from '../types.js';
 
 import { arxivSearch } from '../plugins/literature/arxiv-search.js';
 import { parseDocument } from '../plugins/literature/pdf-parser.js';
@@ -34,19 +40,83 @@ import { generateOutline, flattenOutline } from '../plugins/writing/outline-gene
 import { writeSectionParagraph } from '../plugins/writing/section-writer.js';
 import { checkCoherence } from '../plugins/writing/coherence-checker.js';
 import { polishAllSections } from '../plugins/writing/polish-editor.js';
-import { verifyCitations, generateVerificationReport } from '../plugins/verification/citation-verifier.js';
+import { generateVerificationReport } from '../plugins/verification/citation-verifier.js';
+import { recoverDraftCitations, verifyDraftCitations } from './citation-recovery.js';
 import { checkPlagiarism } from '../plugins/verification/plagiarism-checker.js';
 import { formatPaperQualityReport, validateDocxFile, validateMarkdownPaper } from '../plugins/verification/paper-quality-validator.js';
-import { formatCrossReviewRounds, formatScientificReview, reviewScientificQuality, reviseSectionsFromReviews, type CrossReviewRound } from '../plugins/verification/scientific-quality-reviewer.js';
+import { formatCrossReviewRounds, formatScientificReview, reviewScientificQuality, reviseSectionsFromReviews } from '../plugins/verification/scientific-quality-reviewer.js';
 import { exportToDocx } from '../plugins/export/docx-exporter.js';
 import { exportToLatex } from '../plugins/export/latex-exporter.js';
 import { readFeedback } from '../../config/dsh/web/paper-feedback.js';
+import { adoptCanonicalDraft, canonicalScope, renderCanonicalMarkdown, syncCanonicalDraft } from './canonical-draft.js';
 
 const STATE_FILE = 'paper-pipeline-state.json';
 const LOCK_FILE = 'paper-pipeline.lock.json';
 
 // 需要人工审批的阶段
 const APPROVAL_STAGES: PipelineStage[] = ['topic-confirmation', 'protocol-design', 'outline-generation', 'submission-readiness'];
+
+function collectArgumentNodes(nodes: OutlineNode[], depth = 0): string[] {
+  return nodes.flatMap((node) => {
+    const indent = '  '.repeat(depth);
+    const argument = node.argument?.trim() || '待补充';
+    const papers = node.supportingPapers?.length ? node.supportingPapers.join(', ') : '暂无文献线索，需说明原因';
+    return [
+      `${indent}- **${node.id} ${node.title}**`,
+      `${indent}  - 核心论点：${argument}`,
+      `${indent}  - 文献线索（尚待核验）：${papers}`,
+      ...collectArgumentNodes(node.children || [], depth + 1),
+    ];
+  });
+}
+
+function readBlueprintSection(markdown: string, heading: string): string {
+  const marker = `## ${heading}`;
+  const start = markdown.indexOf(marker);
+  if (start < 0) return '';
+  const bodyStart = markdown.indexOf('\n', start);
+  if (bodyStart < 0) return '';
+  const nextHeading = markdown.indexOf('\n## ', bodyStart + 1);
+  return markdown.slice(bodyStart + 1, nextHeading < 0 ? undefined : nextHeading).trim();
+}
+
+/** Render the outline as an author-reviewable argument map without adding model calls. */
+export function renderArgumentBlueprint(topic: string, outline: Outline, previous = ''): string {
+  const authorAnswer = readBlueprintSection(previous, '中心回答（作者确认）') || '[待作者填写：用一至两句直接回答研究问题，明确结论范围。]';
+  const alternatives = readBlueprintSection(previous, '替代解释与适用边界（作者确认）') || '[待作者填写：主要替代解释、结论边界与不确定性；如不适用，请说明原因。]';
+  const claims = collectArgumentNodes(outline.nodes).join('\n') || '- 大纲尚无论点节点。';
+  const roadmap = outline.nodes.map((node) => `${node.id} ${node.title}`).join(' → ') || '待补充';
+
+  return [
+    '# 论证蓝图（大纲阶段草案）',
+    '',
+    '> 由现有大纲自动整理；文献线索尚待核验，经验结果不得在数据门禁通过前写成发现。',
+    '',
+    '## 研究问题',
+    topic,
+    '',
+    '## 中心回答（作者确认）',
+    authorAnswer,
+    '',
+    '## 主张与证据路径（由大纲生成）',
+    claims,
+    '',
+    '## 读者路线图',
+    roadmap,
+    '',
+    '## 替代解释与适用边界（作者确认）',
+    alternatives,
+    '',
+    '## 审批前核对',
+    '- 每项主张都直接推进对研究问题的回答，取有深度的论证，不为覆盖面堆砌主题。',
+    '- 文献综述综合研究之间的支持、冲突与局限，不把“缺少检索结果”直接当作研究空白。',
+    '- 对经验或因果主张，明确可区分的替代解释与观测证据；假设不是研究发现。',
+    '- 正文段落有清晰主张、支持证据和解释，并说明它对总论证的作用。',
+    '- 结论回答研究问题，不引入未在正文论证的新主张。',
+    '',
+  ].join('\n');
+}
+
 type ApprovalMode = 'auto' | 'topic' | 'all';
 export const PIPELINE_STAGES: PipelineStage[] = [
   'project-intake',
@@ -135,7 +205,17 @@ export class PaperPipeline {
     this.state.stage = migrateLegacyStage(this.state.stage);
   }
 
+  /** Explicitly integrate audited work under the same project lock; no checkpoint shortcuts. */
+  integrateExperiment(request: ExperimentIntegration): void {
+    const releaseLock = this.acquireProjectLock();
+    try {
+      if (integrateExperiment(this.outputDir, this.state, request)) this.saveState();
+    } finally { releaseLock(); }
+  }
+
   private researchInstructions(): string {
+    const sourceScope = canonicalScope(this.outputDir, this.state.sections);
+    if (sourceScope) return [formatJournalInstructions(this.journalProfile), sourceScope, researchInputInstructions(this.outputDir)].filter(Boolean).join('\n\n');
     const direction = this.state.metadata.researchDirection;
     const controls = [
       direction?.focus && `Core focus and contribution: ${direction.focus}`,
@@ -147,6 +227,8 @@ export class PaperPipeline {
       formatJournalInstructions(this.journalProfile),
       controls.length > 0 ? `Research direction controls:\n${controls.join('\n')}` : '',
       this.topicBoundaryInstructions(),
+      researchInputInstructions(this.outputDir),
+      integratedProtocol(this.state) && readFileSync(integratedProtocol(this.state)!, 'utf8'),
     ].filter(Boolean).join('\n\n');
   }
 
@@ -207,6 +289,13 @@ export class PaperPipeline {
   async run(): Promise<PipelineState> {
     const releaseLock = this.acquireProjectLock();
     try {
+      if (PIPELINE_STAGES.indexOf(this.state.stage) >= PIPELINE_STAGES.indexOf('introduction-writing')) {
+        assertPrimaryExperimentScope(this.outputDir, this.state.metadata.resultsFile);
+      }
+      if (adoptCanonicalDraft(this.outputDir, this.state)) {
+        console.log('[现稿接续] 已接入经源审计的完整稿件；跳过已保存段落，继续引用、润色与质量门禁。');
+      }
+      if (!renderCanonicalMarkdown(this.state.sections)) reconcileWritingStages(this.state);
       this.saveState();
       return await this.runLocked();
     } finally {
@@ -248,6 +337,7 @@ export class PaperPipeline {
       }
 
       try {
+        this.saveState();
         await this.executeStage(stage);
         this.saveState();
         console.log(`[完成] ${stage}`);
@@ -335,7 +425,7 @@ export class PaperPipeline {
         await this.stageOutlineGeneration();
         break;
       case 'introduction-writing':
-        await this.stageSectionWriting('前言与相关工作', /introduction|background|related work|literature review|引言|前言|背景|相关工作|文献综述/i);
+        await this.stageSectionWriting('前言与相关工作');
         break;
       case 'experiment-execution':
         await this.stageExperimentExecution();
@@ -344,16 +434,20 @@ export class PaperPipeline {
         await this.stageDataValidation();
         break;
       case 'methods-writing':
-        await this.stageSectionWriting('方法与实验设置', /method|methodology|materials|data|experimental setup|framework|algorithm|方法|材料|数据|实验设置|模型|算法/i);
+        await this.stageSectionWriting('方法与实验设置');
         break;
       case 'results-writing':
-        await this.stageSectionWriting('研究结果', /results?|findings?|evaluation|performance|结果|发现|评估|性能/i);
+        await this.stageSectionWriting('研究结果');
         break;
       case 'discussion-writing':
-        await this.stageSectionWriting('讨论与局限', /discussion|implication|limitation|threat|讨论|启示|局限|威胁/i);
+        await this.stageSectionWriting('讨论与局限');
         break;
       case 'manuscript-completion':
-        await this.stageSectionWriting('摘要、结论及其余章节', /.*/, true);
+        if (this.state.outline && !flattenOutline(this.state.outline.nodes).some((node) => /abstract|摘要/i.test(node.title))) {
+          this.state.outline.nodes.unshift({ id: 'abstract', level: 1, title: 'Abstract', estimatedWords: 250, supportingPapers: [] });
+        }
+        await this.stageSectionWriting('摘要、结论及其余章节', true);
+        reconcileWritingStages(this.state);
         break;
       case 'citation-verification':
         await this.stageCitationVerification();
@@ -551,7 +645,9 @@ export class PaperPipeline {
     const result = await generateOutline(this.state.topic, this.state.papers, this.state.notes, {
       targetWords: this.journalProfile?.targetWords || 8000,
       language: this.journalProfile ? 'en' : 'zh',
-      journalInstructions: this.researchInstructions(),
+      responseFile: join(this.stateDir, 'outline-response.json'),
+      journalInstructions: [this.researchInstructions(), integratedProtocol(this.state)
+        ? await this.loadValidatedResultEvidence() : ''].filter(Boolean).join('\n\n'),
     });
 
     if (!result.success || !result.data) {
@@ -559,11 +655,14 @@ export class PaperPipeline {
     }
 
     this.state.outline = result.data;
+    const blueprintPath = join(this.milestoneDir, 'argument-blueprint.md');
+    const previousBlueprint = existsSync(blueprintPath) ? readFileSync(blueprintPath, 'utf8') : '';
+    await writeFile(blueprintPath, renderArgumentBlueprint(this.state.topic, result.data, previousBlueprint), 'utf8');
     console.log(`大纲生成完成，共 ${result.data.nodes.length} 个一级节点`);
   }
 
   // ===== 阶段 5: 逐段写作 =====
-  private async stageSectionWriting(label: string, matcher: RegExp, includeUnmatched = false): Promise<void> {
+  private async stageSectionWriting(label: string, includeUnmatched = false): Promise<void> {
     if (!this.state.outline) {
       throw new Error('大纲不存在，无法开始写作');
     }
@@ -572,12 +671,12 @@ export class PaperPipeline {
     console.log(`[模型] ${route.provider.toUpperCase()} / ${route.model}`);
 
     const evidenceContext = await this.loadValidatedResultEvidence();
-    const allNodes = flattenOutline(this.state.outline.nodes);
     // 只写三级节点（叶子节点）
-    const allLeafNodes = allNodes.filter((n) => !n.children || n.children.length === 0);
+    const tasks = writingTasks(this.state.outline.nodes);
+    const allLeafNodes = tasks.filter((task) => includeUnmatched || task.stage === this.state.stage).map((task) => task.node);
     const leafNodes = allLeafNodes.filter((node) => {
       if (this.state.sections.some((section) => section.nodeId === node.id && section.status === 'completed')) return false;
-      return includeUnmatched || matcher.test(node.title);
+      return true;
     });
 
     console.log(`开始撰写${label}，共 ${leafNodes.length} 个小节；每完成一段立即保存`);
@@ -680,12 +779,18 @@ export class PaperPipeline {
     if (empiricalChecks.some((check) => !check.passed)) {
       throw new Error(`实证证据在数据验收后发生变化：${empiricalChecks.filter((check) => !check.passed).map((check) => check.name).join(', ')}`);
     }
-    const provenancePath = join(this.milestoneDir, 'reproducibility', 'result-provenance.tsv');
+    const provenancePath = integratedEvidence(this.state, 'result-provenance.tsv') || join(this.milestoneDir, 'reproducibility', 'result-provenance.tsv');
     if (!existsSync(provenancePath)) throw new Error('缺少 result-provenance.tsv，禁止开始论文行文');
     const provenance = await readFile(provenancePath, 'utf8');
     const provenanceRows = provenance.split(/\r?\n/).slice(1).filter((line) => line.trim());
     if (provenanceRows.length === 0 || provenanceRows.some((line) => !/\tVERIFIED\s*$/i.test(line))) {
       throw new Error('结果溯源表为空或含非 VERIFIED 主张，禁止开始论文行文');
+    }
+    const structured = resultsFile.toLowerCase().endsWith('.json') ? JSON.parse(content) : undefined;
+    if (isConditionalNetwork(structured)) {
+      const evidence = conditionalNetworkEvidence(structured);
+      if (evidence.length > 24000) throw new Error('结构化实验写作证据超过上下文预算；请生成可核验的精简汇总，禁止截断关键结果');
+      return `Source: ${resolve(resultsFile)}\nResult SHA256: ${currentHash}\n${evidence}`;
     }
     const limit = 24000;
     const excerpt = content.length > limit ? `${content.slice(0, limit)}\n[TRUNCATED: do not infer omitted values]` : content;
@@ -701,13 +806,13 @@ export class PaperPipeline {
 
   private async stageDataValidation(): Promise<void> {
     const result = await validateExperimentResults(this.state.metadata.resultsFile || '', this.milestoneDir, {
-      analysisPlanFile: join(this.milestoneDir, 'analysis-plan.md'),
+      analysisPlanFile: integratedProtocol(this.state) || join(this.milestoneDir, 'analysis-plan.md'),
       empiricalManifestFile: join(this.milestoneDir, 'reproducibility', 'empirical-manifest.json'),
       experimentLogFile: join(this.logsDir, 'experiment-run.log'),
       requireEmpiricalManifest: this.isEmpiricalProject(),
-      reproductionCheckFile: join(this.milestoneDir, 'reproducibility', 'reproduction-check.json'),
+      reproductionCheckFile: integratedEvidence(this.state, 'reproduction-check.json') || join(this.milestoneDir, 'reproducibility', 'reproduction-check.json'),
       requireExecutionEvidence: true,
-      statisticalAuditFile: join(this.milestoneDir, 'reproducibility', 'statistical-audit.json'),
+      statisticalAuditFile: integratedEvidence(this.state, 'statistical-audit.json') || join(this.milestoneDir, 'reproducibility', 'statistical-audit.json'),
     });
     if (!result.success || !result.data) throw new Error(result.error || '实验数据未通过验收');
     const resultsFile = this.state.metadata.resultsFile;
@@ -717,6 +822,10 @@ export class PaperPipeline {
       await copyFile(resolve(resultsFile), join(resultsDir, safeFileBase(resultsFile)));
     }
     console.log(`数据验收: ${result.data}`);
+    if (integratedProtocol(this.state) && !this.state.outline) {
+      await this.stageOutlineGeneration();
+      this.saveState();
+    }
   }
 
   // ===== 阶段 6: 引用核验 =====
@@ -725,10 +834,16 @@ export class PaperPipeline {
     console.log('正在核验引用真实性...');
     console.log(`[模型] ${route.provider.toUpperCase()} / ${route.model}`);
 
-    const result = await verifyCitations(this.state.sections, this.state.papers, this.state.notes);
-    if (!result.success || !result.data) {
-      throw new Error(`引用核验失败: ${result.error}`);
+    const cacheDir = join(this.stateDir, 'citation-recovery');
+    let assessments = await verifyDraftCitations(this.state, join(cacheDir, 'verification'));
+    if (assessments.some((assessment) => assessment.status !== 'verified')) {
+      const repaired = await recoverDraftCitations(this.state,
+        assessments.filter((assessment) => assessment.status !== 'verified'),
+        { evidence: await this.loadValidatedResultEvidence(), cacheDir: join(cacheDir, 'paragraphs') },
+        () => this.saveState());
+      if (repaired > 0) assessments = await verifyDraftCitations(this.state, join(cacheDir, 'verification'));
     }
+    const result = { data: assessments };
 
     const verified = result.data.filter((r) => r.status === 'verified').length;
     const problems = result.data.filter((r) => r.status !== 'verified').length;
@@ -792,25 +907,10 @@ export class PaperPipeline {
     // 自动润色所有章节（使用 gpt-5.6-luna）
     if (this.state.sections.length > 0) {
       console.log('\n开始自动润色...');
-      const sectionsForPolish = this.state.sections.map((s) => ({
-        id: s.id,
-        title: s.title,
-        content: s.content,
-      }));
-
-      const polishedSections = await polishAllSections(
-        sectionsForPolish,
-        this.state.topic,
-        this.researchInstructions()
-      );
-
-      // 更新 state 中的章节内容
-      for (let i = 0; i < this.state.sections.length; i++) {
-        const polished = polishedSections.find((p) => p.id === this.state.sections[i].id);
-        if (polished) {
-          this.state.sections[i].content = polished.content;
-        }
-      }
+      await polishWithCheckpoints(this.state.sections, async (section) => {
+        const [polished] = await polishAllSections([section], this.state.topic, this.researchInstructions());
+        return polished.content;
+      }, () => this.saveState());
 
       console.log('自动润色完成');
     } else {
@@ -822,32 +922,13 @@ export class PaperPipeline {
   private async stageQualityValidation(): Promise<void> {
     console.log('正在执行确定性结构检查与两轮跨模型评审改稿...');
     await this.ensureProjectDirs();
-    const rounds: CrossReviewRound[] = [];
-
-    for (let round = 1; round <= 2; round++) {
-      console.log(`[交叉评审] 第 ${round}/2 轮：评审模型给出意见，写作模型据此改稿`);
-      const primary = await reviewScientificQuality(this.state.sections, this.researchInstructions(), 'quality');
-      if (!primary.success || !primary.data) throw new Error(primary.error || '第一评审模型没有返回结果');
-
-      const secondary = await reviewScientificQuality(this.state.sections, this.researchInstructions(), 'qualityCrossReview');
-      if (!secondary.success || !secondary.data) throw new Error(secondary.error || '第二评审模型没有返回结果');
-
-      const revision = await reviseSectionsFromReviews(
-        this.state.sections,
-        [primary.data, secondary.data],
-        this.researchInstructions()
-      );
-      if (!revision.success || !revision.data) throw new Error(revision.error || '写作模型未能根据评审意见完成改稿');
-
-      this.state.sections = revision.data.sections;
-      this.saveState();
-      rounds.push({
-        round,
-        primary: primary.data,
-        secondary: secondary.data,
-        revisionSummary: revision.data.summary,
-      });
-      await writeFile(this.outputPath(`scientific-review-round-${round}.md`), formatCrossReviewRounds([rounds[rounds.length - 1]]), 'utf-8');
+    const rounds = await runQualityReviewRounds(this.state, {
+      review: (task) => reviewScientificQuality(this.state.sections, this.researchInstructions(), task),
+      revise: (reviews, save) => reviseSectionsFromReviews(this.state.sections, reviews, this.researchInstructions(), save),
+      save: () => this.saveState(),
+    });
+    for (const result of rounds) {
+      await writeFile(this.outputPath(`scientific-review-round-${result.round}.md`), formatCrossReviewRounds([result]), 'utf-8');
     }
 
     const markdown = buildSectionsMarkdown(this.state.sections);
@@ -961,7 +1042,7 @@ export class PaperPipeline {
     } else throw new Error(latexResult.error || 'LaTeX 导出失败');
 
     // 保存完整 Markdown
-    const mdContent = this.state.sections.map((s) => `## ${s.title}\n\n${s.content}`).join('\n\n');
+    const mdContent = buildSectionsMarkdown(this.state.sections);
     await writeFile(this.outputPath('paper-full.md'), mdContent, 'utf-8');
     console.log(`完整 Markdown: ${this.outputPath('paper-full.md')}`);
   }
@@ -969,8 +1050,7 @@ export class PaperPipeline {
   private async refreshFinalCitationEvidence(): Promise<void> {
     this.state.sections = refreshCitationContexts(this.state.sections);
     this.saveState();
-    const result = await verifyCitations(this.state.sections, this.state.papers, this.state.notes);
-    if (!result.success || !result.data) throw new Error(`终稿引用核验失败: ${result.error}`);
+    const result = { data: await verifyDraftCitations(this.state, join(this.stateDir, 'citation-recovery', 'verification')) };
     const problems = result.data.filter((item) => item.status !== 'verified');
     const recencyAudit = this.citationRecencyAudit();
     const report = [
@@ -978,7 +1058,7 @@ export class PaperPipeline {
       recencyAudit.report,
       '## Final Draft Citation Binding',
       '',
-      '- Status: PASS',
+      `- Status: ${problems.length === 0 && recencyAudit.passed ? 'PASS' : 'BLOCKED'}`,
       '- Scope: exported manuscript after polishing and cross-model revision.',
       '',
     ].join('\n');
@@ -994,6 +1074,7 @@ export class PaperPipeline {
   // ===== 状态持久化 =====
   private saveState(): void {
     try {
+      syncCanonicalDraft(this.state.sections);
       if (!existsSync(this.stateDir)) {
         mkdirSync(this.stateDir, { recursive: true });
       }
@@ -1093,6 +1174,8 @@ export class PaperPipeline {
 }
 
 function buildSectionsMarkdown(sections: Section[]): string {
+  const source = renderCanonicalMarkdown(sections);
+  if (source) return source;
   return sections.map((section) => `## ${section.title}\n\n${section.content.trim()}`).join('\n\n');
 }
 
@@ -1289,6 +1372,9 @@ async function main() {
   let resultsFile: string | undefined;
   let outputDir: string | undefined;
   let paperProjectId: string | undefined;
+  let revisionReference = '';
+  let revisionProtocol = '';
+  let revisionReason = '';
   const researchDirection: NonNullable<PipelineState['metadata']['researchDirection']> = {};
   let approvalMode: ApprovalMode = 'topic';
   let approvedStage: PipelineStage | undefined;
@@ -1308,6 +1394,12 @@ async function main() {
       outputDir = args[++i];
     } else if (args[i] === '--project-id' && args[i + 1]) {
       paperProjectId = args[++i];
+    } else if (args[i] === '--experiment-revision-reference' && args[i + 1]) {
+      revisionReference = args[++i];
+    } else if (args[i] === '--experiment-revision-protocol' && args[i + 1]) {
+      revisionProtocol = args[++i];
+    } else if (args[i] === '--experiment-revision-reason' && args[i + 1]) {
+      revisionReason = args[++i];
     } else if (args[i] === '--focus' && args[i + 1]) {
       researchDirection.focus = args[++i];
     } else if (args[i] === '--scope' && args[i + 1]) {
@@ -1370,6 +1462,11 @@ async function main() {
   }, { inputDir, journalId, experimentCommand, resultsFile, outputDir, paperProjectId, researchDirection });
 
   if (paperProjectId) console.log(`[论文项目ID] ${paperProjectId}`);
+
+  if (revisionReference || revisionProtocol || revisionReason) {
+    if (!revisionReference || !revisionProtocol || !revisionReason) throw new Error('实验接续需要同时提供已审计结果、冻结协议和修改理由');
+    pipeline.integrateExperiment({ referenceResult: revisionReference, protocolFile: revisionProtocol, reason: revisionReason });
+  }
 
   const finalState = await pipeline.run();
   if (finalState.metadata.awaitingApproval) process.exitCode = 3;
