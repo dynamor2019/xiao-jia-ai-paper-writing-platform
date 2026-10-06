@@ -42,6 +42,7 @@ import { checkCoherence } from '../plugins/writing/coherence-checker.js';
 import { polishAllSections } from '../plugins/writing/polish-editor.js';
 import { generateVerificationReport } from '../plugins/verification/citation-verifier.js';
 import { recoverDraftCitations, verifyDraftCitations } from './citation-recovery.js';
+import { outlineSections } from './outline-sections.js';
 import { checkPlagiarism } from '../plugins/verification/plagiarism-checker.js';
 import { formatPaperQualityReport, validateDocxFile, validateMarkdownPaper } from '../plugins/verification/paper-quality-validator.js';
 import { formatCrossReviewRounds, formatScientificReview, reviewScientificQuality, reviseSectionsFromReviews } from '../plugins/verification/scientific-quality-reviewer.js';
@@ -931,7 +932,7 @@ export class PaperPipeline {
       await writeFile(this.outputPath(`scientific-review-round-${result.round}.md`), formatCrossReviewRounds([result]), 'utf-8');
     }
 
-    const markdown = buildSectionsMarkdown(this.state.sections);
+    const markdown = buildSectionsMarkdown(outlineSections(this.state.sections, this.state.outline));
     const deterministic = validateMarkdownPaper(markdown, { requireReferences: false, requireEmbeddedAssets: false });
     await writeFile(this.outputPath('paper-quality-report.md'), formatPaperQualityReport('Pre-export Paper Quality Gate', deterministic), 'utf-8');
 
@@ -1005,9 +1006,10 @@ export class PaperPipeline {
     await this.refreshFinalCitationEvidence();
 
     const title = this.state.topic;
+    const exportSections = outlineSections(this.state.sections, this.state.outline);
 
     // 导出 Word
-    const docxResult = await exportToDocx(this.state.sections, this.state.papers, {
+    const docxResult = await exportToDocx(exportSections, this.state.papers, {
       title,
       outputDir: this.finalDir,
       projectDir: this.outputDir,
@@ -1030,7 +1032,7 @@ export class PaperPipeline {
     console.log(`Word 文档: ${docxResult.data.filePath} (${docxResult.data.format})`);
 
     // 导出 LaTeX
-    const latexResult = await exportToLatex(this.state.sections, this.state.papers, {
+    const latexResult = await exportToLatex(exportSections, this.state.papers, {
       title,
       outputDir: this.finalDir,
       template: 'ctex',
@@ -1042,7 +1044,7 @@ export class PaperPipeline {
     } else throw new Error(latexResult.error || 'LaTeX 导出失败');
 
     // 保存完整 Markdown
-    const mdContent = buildSectionsMarkdown(this.state.sections);
+    const mdContent = buildSectionsMarkdown(exportSections);
     await writeFile(this.outputPath('paper-full.md'), mdContent, 'utf-8');
     console.log(`完整 Markdown: ${this.outputPath('paper-full.md')}`);
   }
@@ -1176,7 +1178,7 @@ export class PaperPipeline {
 function buildSectionsMarkdown(sections: Section[]): string {
   const source = renderCanonicalMarkdown(sections);
   if (source) return source;
-  return sections.map((section) => `## ${section.title}\n\n${section.content.trim()}`).join('\n\n');
+  return sections.map((section) => `${'#'.repeat(Math.min(section.nodeId.split('.').length + 1, 4))} ${section.title}\n\n${section.content.trim()}`).join('\n\n');
 }
 
 function markdownToReviewSections(markdown: string): Section[] {
