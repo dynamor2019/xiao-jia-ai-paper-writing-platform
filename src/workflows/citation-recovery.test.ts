@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { PipelineState } from '../types.js';
-import { recoverDraftCitations, refreshDraftCitations, verifyDraftCitations } from './citation-recovery.js';
+import { citationClaimContext, recoverDraftCitations, refreshDraftCitations, verifyDraftCitations } from './citation-recovery.js';
 import { getModelClient } from '../lib/model-client.js';
 
 test('refresh preserves paragraph context including decimal quantities', () => {
@@ -12,6 +12,14 @@ test('refresh preserves paragraph context including decimal quantities', () => {
     papers: [{ id: 'source-1' }], notes: new Map() } as unknown as PipelineState;
   refreshDraftCitations(state);
   assert.equal(state.sections[0].citations[0].rawText, state.sections[0].content);
+});
+
+test('marker context excludes claims attributed to different papers and keeps decimal quantities', () => {
+  const rawText = 'Source A reports a 1.5 factor [1]. Source B reports geometry [2].';
+  assert.equal(citationClaimContext({ marker: '[2]', rawText, paperId: 'B', verified: false }),
+    'Source B reports geometry [2].');
+  assert.equal(citationClaimContext({ marker: '[1]', rawText, paperId: 'A', verified: false }),
+    'Source A reports a 1.5 factor [1].');
 });
 
 test('audit rejection guides one bounded revision and cached resume never repeats paid calls', async (context) => {

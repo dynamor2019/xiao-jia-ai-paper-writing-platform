@@ -7,6 +7,18 @@ import type { VerificationResult } from '../plugins/verification/citation-verifi
 import { extractCitations } from '../plugins/writing/section-writer.js';
 import { renderCanonicalMarkdown } from './canonical-draft.js';
 
+/** Isolate attributed sentences without splitting decimal quantities or renumbering markers. */
+export function citationClaimContext(citation: VerificationResult['citation']): string {
+  const segments = Array.from(new Intl.Segmenter('en', { granularity: 'sentence' })
+    .segment(citation.rawText || ''), (entry) => entry.segment.trim());
+  const claims = segments.flatMap((segment, index) => {
+    if (!segment.includes(citation.marker)) return [];
+    if (segment.startsWith(citation.marker) && index > 0) return [`${segments[index - 1]} ${segment}`];
+    return [segment];
+  });
+  return claims.join(' ');
+}
+
 /** Preserve manuscript reference identities; batch position must never rename a source. */
 async function verifyBoundBatch(state: PipelineState, citations: VerificationResult['citation'][], directory: string): Promise<VerificationResult[]> {
   const library = state.papers.map((paper, index) => ({ marker: `[${index + 1}]`, paperId: paper.id,
@@ -16,7 +28,7 @@ async function verifyBoundBatch(state: PipelineState, citations: VerificationRes
   if (reviewable.length) {
     const response = await cachedReply(directory,
       'Verify citation attribution using ONLY the supplied evidence. Library marker and paperId are permanent manuscript identities, NOT batch positions. For each citation, identify assertions actually attributed to its marker in the paragraph; do not demand that one paper support assertions attributed to OTHER markers or project results. Unsupported assertions attributed to this marker must fail. Check existence, attribution and strength; use needs-review when evidence is insufficient. Return strict JSON {"results":[{"index":1,"status":"verified|not-found|mismatch|needs-review","reason":"brief evidence-specific reason"}]}. Cover each request index exactly once; do not rename sources.',
-      `Permanent library:\n${JSON.stringify(library)}\nCitation requests:\n${JSON.stringify(reviewable.map((citation, index) => ({ index: index + 1, ...citation })))}`, 'citation');
+      `Permanent library:\n${JSON.stringify(library)}\nCitation requests (only the sentences actually carrying each marker):\n${JSON.stringify(reviewable.map((citation, index) => ({ index: index + 1, marker: citation.marker, paperId: citation.paperId, claim: citationClaimContext(citation) })))}`, 'citation');
     try {
       const parsed = objectReply(response).results;
       if (Array.isArray(parsed)) rows = parsed;
@@ -46,7 +58,7 @@ export async function verifyDraftCitations(state: PipelineState, directory: stri
   for (const section of state.sections) {
     for (let index = 0; index < section.citations.length; index += 2) {
       const citations = section.citations.slice(index, index + 2);
-      const key = createHash('sha256').update(JSON.stringify({ version: 2, citations,
+      const key = createHash('sha256').update(JSON.stringify({ version: 3, citations,
         papers: state.papers, notes: [...state.notes] })).digest('hex');
       const path = join(directory, `${key}.json`);
       if (existsSync(path)) {
