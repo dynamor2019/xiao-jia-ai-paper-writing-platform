@@ -17,9 +17,13 @@ async function verifyBoundBatch(state: PipelineState, citations: VerificationRes
     const response = await cachedReply(directory,
       'Verify citation attribution using ONLY the supplied evidence. Library marker and paperId are permanent manuscript identities, NOT batch positions. For each citation, identify assertions actually attributed to its marker in the paragraph; do not demand that one paper support assertions attributed to OTHER markers or project results. Unsupported assertions attributed to this marker must fail. Check existence, attribution and strength; use needs-review when evidence is insufficient. Return strict JSON {"results":[{"index":1,"status":"verified|not-found|mismatch|needs-review","reason":"brief evidence-specific reason"}]}. Cover each request index exactly once; do not rename sources.',
       `Permanent library:\n${JSON.stringify(library)}\nCitation requests:\n${JSON.stringify(reviewable.map((citation, index) => ({ index: index + 1, ...citation })))}`, 'citation');
-    const parsed = objectReply(response).results;
-    if (!Array.isArray(parsed)) throw new Error('Missing structured citation assessments');
-    rows = parsed;
+    try {
+      const parsed = objectReply(response).results;
+      if (Array.isArray(parsed)) rows = parsed;
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      console.warn('[Citation assessment] Invalid or conflicting JSON retained in raw cache; no approval');
+    }
   }
   return citations.map((citation) => {
     const paper = state.papers.find((item) => item.id === citation.paperId);
@@ -73,8 +77,19 @@ async function cachedReply(directory: string, system: string, prompt: string, ta
 
 /** Parse complete JSON only, without reconstructing truncated replies or guessed content. */
 function objectReply(raw: string): Record<string, unknown> {
+  const blocks = [...raw.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)];
+  if (blocks.length) {
+    const parsed = blocks.map((block) => JSON.parse(block[1].trim()));
+    if (parsed.some((value) => !value || typeof value !== 'object' || Array.isArray(value))) {
+      throw new SyntaxError('Structured assessment must be a JSON object');
+    }
+    if (parsed.some((value) => JSON.stringify(value) !== JSON.stringify(parsed[0]))) {
+      throw new SyntaxError('Conflicting structured assessments');
+    }
+    return parsed[0];
+  }
   const start = raw.indexOf('{'), end = raw.lastIndexOf('}');
-  if (start < 0 || end < start) throw new Error('Citation recovery response is not complete JSON');
+  if (start < 0 || end < start) throw new SyntaxError('Citation recovery response is not complete JSON');
   return JSON.parse(raw.slice(start, end + 1));
 }
 
@@ -89,9 +104,13 @@ async function supportedRevision(candidate: string, evidence: string, directory:
   const raw = await cachedReply(directory,
     'Audit ALL factual/quantitative assertions in the candidate paragraph, including uncited claims. Use ONLY the provided source passages and validated experiment. Reject invented literature results, unprovided numbers, field claims, overstated baselines or uncertainty studies attributed to a spatial-routing paper. Claim deletion or cosmetic rephrasing is not evidence. Return strict JSON {"supported":true|false,"reason":"one brief evidence-based reason"}. Use false for unknown or unsupported assertions.',
     `Evidence:\n${evidence}\n\nCandidate paragraph:\n${candidate}`, 'citation');
-  const verdict = objectReply(raw);
+  let verdict: Record<string, unknown>;
+  try { verdict = objectReply(raw); } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return { supported: false, reason: 'Independent assessment returned invalid or conflicting JSON; no approval. Return one unambiguous evidence-based assessment.' };
+  }
   if (typeof verdict.supported !== 'boolean' || typeof verdict.reason !== 'string' || !verdict.reason.trim()) {
-    throw new Error('Incomplete independent citation-recovery assessment');
+    return { supported: false, reason: 'Incomplete independent citation-recovery assessment; no approval' };
   }
   return { supported: verdict.supported, reason: verdict.reason };
 }
@@ -120,8 +139,16 @@ export async function recoverDraftCitations(
       const response = await cachedReply(options.cacheDir,
         'Repair ONLY the specified paragraph against explicit failed-citation findings. Return strict JSON {"content":"complete revised paragraph"}. Keep the supported topic, method and evidence. Remove or narrow unsupported CLAIMS, not merely their citation markers. Delete fabricated literature percentages/intensities and wrong author attributions. Do not invent replacement sources, findings, savings, significance or experiments. You may remove unsupported numbers/citations; preserve valid project quantities, formulas and assumptions. Do not expand scope. Return a complete coherent paragraph, not editorial instructions.',
         `Evidence:\n${evidence}\n\nFailed findings:\n${JSON.stringify(findings.map((finding) => ({ marker: finding.citation.marker, reason: finding.reason })))}\n\nOriginal paragraph:\n${original}${feedback}`, 'writing');
-      const candidate = objectReply(response).content;
-      if (typeof candidate !== 'string' || !candidate.trim()) throw new Error('Empty citation-recovery paragraph');
+      let candidate: unknown;
+      try { candidate = objectReply(response).content; } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        feedback = '\n\nPrevious response was invalid or conflicting JSON. Return exactly one complete JSON object with a content string.';
+        continue;
+      }
+      if (typeof candidate !== 'string' || !candidate.trim()) {
+        feedback = '\n\nPrevious response lacked a complete content string. Return one complete paragraph in a content string.';
+        continue;
+      }
       if (candidate.trim() === original) break;
       const citations = extractCitations(candidate, state.papers);
       if (citations.some((citation) => citation.paperId.startsWith('missing-reference-'))) {

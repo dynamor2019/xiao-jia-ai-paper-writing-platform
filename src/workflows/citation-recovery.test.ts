@@ -97,3 +97,19 @@ test('batch ordering cannot change manuscript source identities', async (context
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('contradictory JSON does not crash the pipeline or falsely approve a citation', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'citation-conflict-'));
+  try {
+    const state = { sections: [{ content: 'Uncertain claim [1].', citations: [] }],
+      papers: [{ id: 'one', abstract: 'Limited evidence' }], notes: new Map() } as unknown as PipelineState;
+    context.mock.method(getModelClient(), 'generate', async () =>
+      '```json\n{"results":[{"index":1,"status":"verified","reason":"yes"}]}\n```\n' +
+      '```json\n{"results":[{"index":1,"status":"mismatch","reason":"no"}]}\n```');
+    const result = await verifyDraftCitations(state, directory);
+    assert.equal(result[0].status, 'needs-review');
+    assert.equal(state.sections[0].content, 'Uncertain claim [1].');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
