@@ -75,3 +75,25 @@ test('repair may cite another supplied source but never saves invented reference
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('batch ordering cannot change manuscript source identities', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'citation-identity-'));
+  try {
+    const state = { sections: [{ content: 'Chen describes routing [2]. Calixto describes CP [1].', citations: [] }],
+      papers: [{ id: 'CP', title: 'Calixto', abstract: 'CP evidence' },
+        { id: 'graph', title: 'Chen', abstract: 'Graph evidence' }], notes: new Map() } as unknown as PipelineState;
+    context.mock.method(getModelClient(), 'generate', async (_system: string, prompt: string) => {
+      assert.match(prompt, /"marker":"\[1\]","paperId":"CP"/);
+      assert.match(prompt, /"marker":"\[2\]","paperId":"graph"/);
+      return JSON.stringify({ results: [{ index: 1, status: 'verified', reason: 'Graph source supports Chen' },
+        { index: 2, status: 'mismatch', reason: 'Claim not supported by CP source' }] });
+    });
+    const result = await verifyDraftCitations(state, directory);
+    assert.equal(result[0].citation.paperId, 'graph');
+    assert.equal(result[0].status, 'verified');
+    assert.equal(result[1].citation.paperId, 'CP');
+    assert.equal(result[1].status, 'mismatch');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

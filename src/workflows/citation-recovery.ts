@@ -6,7 +6,33 @@ import type { PipelineState } from '../types.js';
 import type { VerificationResult } from '../plugins/verification/citation-verifier.js';
 import { extractCitations } from '../plugins/writing/section-writer.js';
 import { renderCanonicalMarkdown } from './canonical-draft.js';
-import { verifyCitations } from '../plugins/verification/citation-verifier.js';
+
+/** Preserve manuscript reference identities; batch position must never rename a source. */
+async function verifyBoundBatch(state: PipelineState, citations: VerificationResult['citation'][], directory: string): Promise<VerificationResult[]> {
+  const library = state.papers.map((paper, index) => ({ marker: `[${index + 1}]`, paperId: paper.id,
+    title: paper.title, evidence: (state.notes.get(paper.id)?.keyFindings || paper.abstract || '').slice(0, 20000) }));
+  const reviewable = citations.filter((citation) => state.papers.some((paper) => paper.id === citation.paperId));
+  let rows: Array<Record<string, unknown>> = [];
+  if (reviewable.length) {
+    const response = await cachedReply(directory,
+      'Verify citation attribution using ONLY the supplied evidence. Library marker and paperId are permanent manuscript identities, NOT batch positions. For each citation, identify assertions actually attributed to its marker in the paragraph; do not demand that one paper support assertions attributed to OTHER markers or project results. Unsupported assertions attributed to this marker must fail. Check existence, attribution and strength; use needs-review when evidence is insufficient. Return strict JSON {"results":[{"index":1,"status":"verified|not-found|mismatch|needs-review","reason":"brief evidence-specific reason"}]}. Cover each request index exactly once; do not rename sources.',
+      `Permanent library:\n${JSON.stringify(library)}\nCitation requests:\n${JSON.stringify(reviewable.map((citation, index) => ({ index: index + 1, ...citation })))}`, 'citation');
+    const parsed = objectReply(response).results;
+    if (!Array.isArray(parsed)) throw new Error('Missing structured citation assessments');
+    rows = parsed;
+  }
+  return citations.map((citation) => {
+    const paper = state.papers.find((item) => item.id === citation.paperId);
+    if (!paper) return { citation, status: 'not-found', reason: 'Reference is absent from the supplied library' };
+    const index = reviewable.indexOf(citation) + 1;
+    const matches = rows.filter((row) => row.index === index);
+    const row = matches.length === 1 ? matches[0] : undefined;
+    const valid = row && ['verified', 'not-found', 'mismatch', 'needs-review'].includes(String(row.status))
+      && typeof row.reason === 'string' && row.reason.trim();
+    return { citation, paper, status: valid ? row.status as VerificationResult['status'] : 'needs-review',
+      reason: valid ? row.reason as string : 'Missing or invalid assessment; no evidence approval' };
+  });
+}
 
 /** Verify small bounded batches and reuse exact evidence-bound assessments on resume. */
 export async function verifyDraftCitations(state: PipelineState, directory: string): Promise<VerificationResult[]> {
@@ -16,17 +42,16 @@ export async function verifyDraftCitations(state: PipelineState, directory: stri
   for (const section of state.sections) {
     for (let index = 0; index < section.citations.length; index += 2) {
       const citations = section.citations.slice(index, index + 2);
-      const key = createHash('sha256').update(JSON.stringify({ version: 1, citations,
+      const key = createHash('sha256').update(JSON.stringify({ version: 2, citations,
         papers: state.papers, notes: [...state.notes] })).digest('hex');
       const path = join(directory, `${key}.json`);
       if (existsSync(path)) {
         results.push(...JSON.parse(readFileSync(path, 'utf8')));
         continue;
       }
-      const response = await verifyCitations([{ ...section, citations }], state.papers, state.notes);
-      if (!response.success || !response.data) throw new Error(response.error || 'Citation verification failed');
-      writeFileSync(path, JSON.stringify(response.data, null, 2) + '\n', 'utf8');
-      results.push(...response.data);
+      const assessments = await verifyBoundBatch(state, citations, join(directory, 'raw'));
+      writeFileSync(path, JSON.stringify(assessments, null, 2) + '\n', 'utf8');
+      results.push(...assessments);
     }
   }
   return results;
