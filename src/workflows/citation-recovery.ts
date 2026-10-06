@@ -57,7 +57,7 @@ export function refreshDraftCitations(state: PipelineState): void {
 }
 
 /** Require independent support for all revised assertions, not just sentences retaining citations. */
-async function supportedRevision(candidate: string, evidence: string, directory: string): Promise<boolean> {
+async function supportedRevision(candidate: string, evidence: string, directory: string): Promise<{ supported: boolean; reason: string }> {
   const raw = await cachedReply(directory,
     'Audit ALL factual/quantitative assertions in the candidate paragraph, including uncited claims. Use ONLY the provided source passages and validated experiment. Reject invented literature results, unprovided numbers, field claims, overstated baselines or uncertainty studies attributed to a spatial-routing paper. Claim deletion or cosmetic rephrasing is not evidence. Return strict JSON {"supported":true|false,"reason":"one brief evidence-based reason"}. Use false for unknown or unsupported assertions.',
     `Evidence:\n${evidence}\n\nCandidate paragraph:\n${candidate}`, 'citation');
@@ -65,7 +65,7 @@ async function supportedRevision(candidate: string, evidence: string, directory:
   if (typeof verdict.supported !== 'boolean' || typeof verdict.reason !== 'string' || !verdict.reason.trim()) {
     throw new Error('Incomplete independent citation-recovery assessment');
   }
-  return verdict.supported;
+  return { supported: verdict.supported, reason: verdict.reason };
 }
 
 /** Revise only failed draft paragraphs; keep unchanged paragraphs, experiments and canonical sources intact. */
@@ -87,18 +87,24 @@ export async function recoverDraftCitations(
       const findings = failures.filter((failure) => failure.citation.rawText?.trim() === original
         && !/JSON|漏掉|尚未返回/.test(failure.reason));
       if (!findings.length) continue;
+      let feedback = '';
+      for (let attempt = 0; attempt < 2; attempt++) {
       const response = await cachedReply(options.cacheDir,
         'Repair ONLY the specified paragraph against explicit failed-citation findings. Return strict JSON {"content":"complete revised paragraph"}. Keep the supported topic, method and evidence. Remove or narrow unsupported CLAIMS, not merely their citation markers. Delete fabricated literature percentages/intensities and wrong author attributions. Do not invent replacement sources, findings, savings, significance or experiments. You may remove unsupported numbers/citations; preserve valid project quantities, formulas and assumptions. Do not expand scope. Return a complete coherent paragraph, not editorial instructions.',
-        `Evidence:\n${evidence}\n\nFailed findings:\n${JSON.stringify(findings.map((finding) => ({ marker: finding.citation.marker, reason: finding.reason })))}\n\nOriginal paragraph:\n${original}`, 'writing');
+        `Evidence:\n${evidence}\n\nFailed findings:\n${JSON.stringify(findings.map((finding) => ({ marker: finding.citation.marker, reason: finding.reason })))}\n\nOriginal paragraph:\n${original}${feedback}`, 'writing');
       const candidate = objectReply(response).content;
       if (typeof candidate !== 'string' || !candidate.trim()) throw new Error('Empty citation-recovery paragraph');
-      if (candidate.trim() === original) continue;
+      if (candidate.trim() === original) break;
       const existingMarkers = new Set(extractCitations(original, state.papers).map((citation) => citation.marker));
       const citations = extractCitations(candidate, state.papers);
       if (citations.some((citation) => !existingMarkers.has(citation.marker) || citation.paperId.startsWith('missing-reference-'))) {
         throw new Error('Citation recovery introduced a new/unbound reference');
       }
-      if (!await supportedRevision(candidate, evidence, options.cacheDir)) continue;
+      const assessment = await supportedRevision(candidate, evidence, options.cacheDir);
+      if (!assessment.supported) {
+        feedback = `\n\nIndependent audit rejected the previous revision: ${assessment.reason}\nPrevious rejected revision:\n${candidate}\nDelete the unsupported assertions identified by this audit; do not merely remove reference markers. A shorter supported paragraph is preferable to unsupported background claims.`;
+        continue;
+      }
       paragraphs[index] = candidate.trim();
       section.content = paragraphs.join('\n\n');
       section.citations = extractCitations(section.content, state.papers);
@@ -106,6 +112,8 @@ export async function recoverDraftCitations(
       save();
       repaired++;
       console.log(`[引用改稿] ${section.id} 第${index + 1}段已通过独立证据核对并保存`);
+      break;
+      }
     }
   }
   return repaired;

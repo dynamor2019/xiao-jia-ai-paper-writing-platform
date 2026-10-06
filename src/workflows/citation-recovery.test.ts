@@ -4,13 +4,42 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { PipelineState } from '../types.js';
-import { refreshDraftCitations, verifyDraftCitations } from './citation-recovery.js';
+import { recoverDraftCitations, refreshDraftCitations, verifyDraftCitations } from './citation-recovery.js';
+import { getModelClient } from '../lib/model-client.js';
 
 test('refresh preserves paragraph context including decimal quantities', () => {
   const state = { sections: [{ content: 'A factor of 1.5 is not verified [1].', citations: [] }],
     papers: [{ id: 'source-1' }], notes: new Map() } as unknown as PipelineState;
   refreshDraftCitations(state);
   assert.equal(state.sections[0].citations[0].rawText, state.sections[0].content);
+});
+
+test('audit rejection guides one bounded revision and cached resume never repeats paid calls', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'citation-feedback-'));
+  try {
+    const state = { sections: [{ content: 'Invented saving [1].', citations: [] }],
+      papers: [{ id: 'source', title: 'Routing', abstract: 'Spatial routing only' }], notes: new Map() } as unknown as PipelineState;
+    refreshDraftCitations(state);
+    const failures = [{ citation: state.sections[0].citations[0], status: 'mismatch' as const, reason: 'No savings evidence' }];
+    const replies = [JSON.stringify({ content: 'Still an invented saving [1].' }),
+      JSON.stringify({ supported: false, reason: 'Saving remains invented' }),
+      JSON.stringify({ content: 'The source concerns spatial routing [1].' }),
+      JSON.stringify({ supported: true, reason: 'Explicit source support' })];
+    const generate = context.mock.method(getModelClient(), 'generate', async (_system: string, prompt: string) => {
+      if (replies.length === 2) assert.match(prompt, /Saving remains invented/);
+      return replies.shift()!;
+    });
+    let saves = 0;
+    const options = { evidence: 'Conditional experiment', cacheDir: directory };
+    assert.equal(await recoverDraftCitations(state, failures, options, () => { saves++; }), 1);
+    assert.equal(saves, 1);
+    assert.equal(state.sections[0].content, 'The source concerns spatial routing [1].');
+    state.sections[0].content = 'Invented saving [1].';
+    assert.equal(await recoverDraftCitations(state, failures, options, () => {}), 1);
+    assert.equal(generate.mock.callCount(), 4);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('unbound references remain failures, including cached resume', async () => {
