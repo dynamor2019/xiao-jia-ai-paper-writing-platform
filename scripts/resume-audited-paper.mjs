@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tsImport } from 'tsx/esm/api';
 import { resolvePaperModelEnv } from './paper-model-env.mjs';
+import { assertResumeBillingAllowed } from './paper-retry-policy.mjs';
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -48,6 +49,7 @@ async function main() {
   const statePath = process.argv[2];
   if (!statePath) throw new Error('An existing Web paper run state file is required');
   const run = JSON.parse(readFileSync(statePath, 'utf8'));
+  assertResumeBillingAllowed(run.error, process.argv.includes('--billing-restored'));
   assertStopped(run);
   if (!run.outputDir || !run.resultsFile || !run.experimentCommand) throw new Error('Existing bound experiment configuration required');
   const checkpointPath = join(run.outputDir, '.dsh-state', 'paper-pipeline-state.json');
@@ -56,7 +58,7 @@ async function main() {
     throw new Error('Only an explicitly integrated, non-approval checkpoint may be resumed');
   }
   Object.assign(process.env, resolvePaperModelEnv());
-  configureSessionDns(process.argv[3]);
+  configureSessionDns(process.argv.slice(3).find((argument) => argument !== '--billing-restored'));
   const { PaperPipeline, PIPELINE_STAGES } = await tsImport(pathToFileURL(join(PROJECT_ROOT, 'src/workflows/paper-pipeline.ts')).href, import.meta.url);
   for (const method of ['log', 'warn', 'error']) {
     const original = console[method].bind(console);
