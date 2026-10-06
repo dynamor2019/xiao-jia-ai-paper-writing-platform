@@ -11,6 +11,7 @@ export function resolveMaxRecoveries(value) {
 }
 
 export function isRecoverablePaperFailure(text) {
+  if (/insufficient balance|billing_error|insufficient_quota|credit balance.*(?:low|exhausted|insufficient)/i.test(text)) return false;
   if (/为避免重复计费.{0,40}已停止自动重试|已停止自动重试.{0,40}稍后手动继续/i.test(text)) return false;
 
   return /Service temporarily unavailable|Connection error|TRANSPORT|fetch failed|ECONNRESET|ETIMEDOUT|TimeoutError|operation was aborted|aborted due to timeout|HTTP 408|HTTP 409|HTTP 429|HTTP 5\d\d|\[5\d\d\]|\[429\]|EMPTY_RESPONSE|completed with no visible content/i.test(text);
