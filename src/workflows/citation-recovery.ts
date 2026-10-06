@@ -95,10 +95,10 @@ export async function recoverDraftCitations(
       const candidate = objectReply(response).content;
       if (typeof candidate !== 'string' || !candidate.trim()) throw new Error('Empty citation-recovery paragraph');
       if (candidate.trim() === original) break;
-      const existingMarkers = new Set(extractCitations(original, state.papers).map((citation) => citation.marker));
       const citations = extractCitations(candidate, state.papers);
-      if (citations.some((citation) => !existingMarkers.has(citation.marker) || citation.paperId.startsWith('missing-reference-'))) {
-        throw new Error('Citation recovery introduced a new/unbound reference');
+      if (citations.some((citation) => citation.paperId.startsWith('missing-reference-'))) {
+        feedback = '\n\nPrevious revision used a reference absent from the provided library. Remove that unsupported source and its dependent assertions; only provided library markers are permitted.';
+        continue;
       }
       const assessment = await supportedRevision(candidate, evidence, options.cacheDir);
       if (!assessment.supported) {

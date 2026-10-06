@@ -54,3 +54,24 @@ test('unbound references remain failures, including cached resume', async () => 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('repair may cite another supplied source but never saves invented references', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'citation-library-'));
+  try {
+    const state = { sections: [{ content: 'Wrong attribution [1].', citations: [] }],
+      papers: [{ id: 'one' }, { id: 'two' }], notes: new Map() } as unknown as PipelineState;
+    refreshDraftCitations(state);
+    const failures = [{ citation: state.sections[0].citations[0], status: 'mismatch' as const, reason: 'Wrong source' }];
+    const replies = [JSON.stringify({ content: 'Invented source [99].' }),
+      JSON.stringify({ content: 'Supported by the other source [2].' }),
+      JSON.stringify({ supported: true, reason: 'Provided source two supports this' })];
+    const generate = context.mock.method(getModelClient(), 'generate', async () => replies.shift()!);
+    let saves = 0;
+    assert.equal(await recoverDraftCitations(state, failures, { evidence: '', cacheDir: directory }, () => { saves++; }), 1);
+    assert.equal(saves, 1);
+    assert.equal(state.sections[0].citations[0].paperId, 'two');
+    assert.equal(generate.mock.callCount(), 3);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
