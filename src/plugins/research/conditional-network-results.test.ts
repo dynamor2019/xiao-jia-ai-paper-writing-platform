@@ -28,6 +28,12 @@ test('writing evidence reaches final held-out failures without sending component
   assert.match(evidence, /VELOCITY_SCREEN_FAILURE/);
   assert.match(evidence, /not field measurements/);
   assert.doesNotMatch(evidence, /xxxxx/);
+  const counts = JSON.parse(evidence);
+  assert.equal(counts.candidate_count, 1);
+  assert.equal(counts.scenario_count, 2);
+  assert.equal(counts.design_scenario_count, 1);
+  assert.equal(counts.held_out_scenario_count, 1);
+  assert.equal(counts.record_count, 2);
 });
 
 test('unknown feasibility, measured-field claims and nonexistent policy selections are rejected', () => {

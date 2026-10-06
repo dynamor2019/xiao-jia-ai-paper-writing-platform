@@ -68,6 +68,10 @@ export function conditionalNetworkEvidence(value: RecordValue): string {
       ? value.generated_component_parameters.length : 0,
     generated_component_parameters: value.generated_component_parameters,
     disclosure: 'Conditional model outputs, not field measurements or certified fan/LCA performance. Component details and generated-component table remain in the full result; do not infer omitted values. Failed or unresolved outcomes remain undefined. Held-out grid variants are deterministic stress cases, not independent statistical samples.',
+    candidate_count: new Set(rows.map((row) => row.candidate_id)).size,
+    scenario_count: new Set(rows.map((row) => row.scenario_id)).size,
+    design_scenario_count: new Set(rows.filter((row) => row.split === 'design').map((row) => row.scenario_id)).size,
+    held_out_scenario_count: new Set(rows.filter((row) => row.split === 'held_out').map((row) => row.scenario_id)).size,
     record_count: rows.length, scenario_status_counts: statuses,
     selections: Object.fromEntries(Object.entries(selections).map(([name, entry]) =>
       [name, { selected: entry.selected ?? null, objective: entry.objective ?? null }])),
