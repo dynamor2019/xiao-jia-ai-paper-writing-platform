@@ -63,7 +63,8 @@ async function cachedReply(directory: string, system: string, prompt: string, ta
   const path = join(directory, `${key}.json`);
   if (existsSync(path)) return JSON.parse(readFileSync(path, 'utf8')).response;
   const response = await getModelClient().generate(system, prompt, {
-    task, temperature: 0, maxTokens: 2048, minOutputChars: task === 'citation' ? 32 : 64,
+    task, temperature: 0, maxTokens: task === 'citation' ? 4096 : 2048,
+    minOutputChars: task === 'citation' ? 32 : 64,
   });
   mkdirSync(directory, { recursive: true });
   writeFileSync(path, JSON.stringify({ key, response }, null, 2) + '\n', 'utf8');
