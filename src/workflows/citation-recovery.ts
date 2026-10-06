@@ -37,7 +37,9 @@ async function cachedReply(directory: string, system: string, prompt: string, ta
   const key = createHash('sha256').update(system + prompt).digest('hex');
   const path = join(directory, `${key}.json`);
   if (existsSync(path)) return JSON.parse(readFileSync(path, 'utf8')).response;
-  const response = await getModelClient().generate(system, prompt, { task, temperature: 0, maxTokens: 2048 });
+  const response = await getModelClient().generate(system, prompt, {
+    task, temperature: 0, maxTokens: 2048, minOutputChars: task === 'citation' ? 32 : 64,
+  });
   mkdirSync(directory, { recursive: true });
   writeFileSync(path, JSON.stringify({ key, response }, null, 2) + '\n', 'utf8');
   return response;
