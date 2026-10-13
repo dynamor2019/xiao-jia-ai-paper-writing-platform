@@ -38,6 +38,8 @@ export function assertPrimaryExperimentScope(outputDir: string, resultsFile?: st
 export function researchInputInstructions(outputDir: string): string {
   const policy = readPolicy(outputDir);
   if (!policy) return '';
+  const scopePath = join(outputDir, 'milestones', 'reproducibility', 'author-approved-scope.md');
+  const approvedScope = existsSync(scopePath) ? readFileSync(scopePath, 'utf8').trim() : '';
   return [
     'Current explicit project input policy supersedes historical scope-change notes.',
     policy.allow_generated_missing_inputs
@@ -48,5 +50,6 @@ export function researchInputInstructions(outputDir: string): string {
     'Disclose assumptions in Methods and limitations and attach the generated-input table. When an assumption materially affects the main result, disclose that dependence in Results and Abstract. Never hide it as a measured quantity.',
     'Experience-based substitution enables model calculations, not field certification; public release and author declarations remain separate.',
     policy.allow_automatic_scope_change ? '' : 'Keep the original source-project research question. A purely synthetic toy study or partial screening cannot silently replace the primary experiment.',
+    approvedScope && `Explicit author-approved claim scope supersedes historical ambitions, not evidence or integrity gates:\n${approvedScope}`,
   ].filter(Boolean).join('\n');
 }

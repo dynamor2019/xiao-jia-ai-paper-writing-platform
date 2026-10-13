@@ -30,6 +30,10 @@ test('disclosed missing-input generation does not authorize replacing the main e
     assert.match(instructions, /Missing INPUT parameters may be generated/);
     assert.match(instructions, /Do not generate experimental OUTCOMES/);
     assert.match(instructions, /Results and Abstract/);
+    writeFileSync(join(root, 'milestones', 'reproducibility', 'author-approved-scope.md'), 'Conditional numerical case study; no engineering certification.');
+    assert.match(researchInputInstructions(root), /author-approved claim scope/);
+    assert.match(researchInputInstructions(root), /no engineering certification/);
+    assert.doesNotThrow(() => assertPrimaryExperimentScope(root, path));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

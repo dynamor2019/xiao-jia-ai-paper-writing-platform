@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const name = 'paper-web-model-router';
+const inject = ['llm', 'agentDefaultModel'];
 const PROJECT_DIR = resolve(process.env.DSH_PAPER_PROJECT_DIR || String.raw`__DSH_PAPER_PROJECT_DIR__`);
 const DEFAULT_ROUTE = { provider: 'rayinai', model: 'gpt-5.6-luna' };
 const PROVIDERS = { openai: 'rayinai', claude: 'rayinai-claude' };
@@ -114,22 +115,13 @@ export function installWebModelRouter(ctx, routeCandidates) {
       const { reasoningEffort: _previousEffort, ...rest } = config;
       return { ...rest, ...pending.route };
     }
-    if (!providerHasCredential(config.provider)) {
-      const task = activeTasks.get(agent)?.turn === turn ? activeTasks.get(agent).task : undefined;
-      const candidates = task ? await routeCandidates(task) : [];
-      const route = firstAvailableRoute(ctx, candidates)
-        || ctx.agentDefaultModel?.currentSelection?.()
-        || SAFE_ROUTE;
-      const fallback = providerHasCredential(route.provider) ? route : SAFE_ROUTE;
-      attempted.set(agent, { turn, step, route: fallback });
-      const { reasoningEffort: _previousEffort, ...rest } = config;
-      ctx.logger?.warn?.(`Web 模型缺少凭据: ${config.provider} -> ${fallback.provider}/${fallback.model}`);
-      return { ...rest, ...fallback };
-    }
     const selected = await selectedRoute(agent, turn, step);
     if (!selected) {
-      attempted.set(agent, { turn, step, route: config });
-      return config;
+      const route = config?.model === 'claude-sonnet-5-5' && config.provider === 'rayinai-claude'
+        ? { ...config, model: 'claude-sonnet-5' }
+        : config;
+      attempted.set(agent, { turn, step, route });
+      return route;
     }
     const { task, route } = selected;
     attempted.set(agent, { turn, step, route });
@@ -150,7 +142,9 @@ export function installWebModelRouter(ctx, routeCandidates) {
       ? candidates.filter((item) => PROVIDERS[item.provider] !== last.route.provider || item.model !== last.route.model)
       : candidates.slice(used + 1);
     const fallback = firstAvailableRoute(ctx, remaining)
-      || (modelIsUnavailable(failure) ? defaultRoute() : undefined);
+      || (modelIsUnavailable(failure) && last.route.provider === 'rayinai-claude' && last.route.model === 'claude-sonnet-5-5'
+        ? { provider: 'rayinai-claude', model: 'claude-sonnet-5' }
+        : undefined);
     if (!fallback || (fallback.provider === last.route.provider && fallback.model === last.route.model)) return next();
     recovery.set(agent, { turn, step, route: fallback });
     ctx.logger?.warn?.(`Web 模型回退: ${last.route.provider}/${last.route.model} -> ${fallback.provider}/${fallback.model}`);
@@ -176,4 +170,4 @@ function apply(ctx) {
   installWebModelRouter(ctx, async (task) => (await routing).getRouteCandidates(task));
 }
 
-export { name, apply };
+export { name, inject, apply };

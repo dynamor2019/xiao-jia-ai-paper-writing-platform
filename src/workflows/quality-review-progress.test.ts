@@ -30,7 +30,15 @@ test('a stopped secondary review reuses the saved primary review and completes e
   assert.deepEqual(calls, ['quality', 'qualityCrossReview', 'qualityCrossReview', 'quality', 'qualityCrossReview']);
   await runQualityReviewRounds(state, services);
   assert.equal(calls.length, 5);
-  state.sections[0].content = 'Changed scope.';
+  const progress = (state as typeof state & { qualityReviewProgress: { coverageVersion?: number } }).qualityReviewProgress;
+  delete progress.coverageVersion;
   await runQualityReviewRounds(state, services);
   assert.equal(calls.length, 9);
+  state.sections[0].content = 'Changed scope.';
+  await runQualityReviewRounds(state, services);
+  assert.equal(calls.length, 13);
+  await runQualityReviewRounds(state, { ...services, contextHash: 'changed-validated-evidence' });
+  assert.equal(calls.length, 17);
+  await runQualityReviewRounds(state, { ...services, contextHash: 'changed-validated-evidence' });
+  assert.equal(calls.length, 17);
 });

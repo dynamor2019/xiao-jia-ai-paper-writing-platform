@@ -10,7 +10,7 @@
       name: ./model-router.js
 
 # 新会话默认使用论文专用 preset；旧会话保留创建时的 preset。
-- id: agent-presets
+- id: agent-preset-registry
   config:
     default: paper
 
@@ -36,6 +36,59 @@
 
 # 默认模型由 paper-web-model-router 按可用凭据选择；缺少中转站 key 时不强制 rayinai。
 
+# 保留用户现有的中转站模型路由；密钥仅通过环境变量或凭据服务解析。
+- id: llm-pi-ai
+  config:
+    providers:
+      sub2api-grok:
+        displayName: Sub2API Grok
+        apiKeyEnv: SUB2API_API_KEY
+        api: openai-responses
+        baseURL: https://api-slb.rayinai.com/v1
+        transport: sse
+        defaultInput: [text, image]
+        models:
+          - id: grok-4.7
+            name: Grok 4.7
+      rayinai:
+        displayName: RayinAI OpenAI
+        apiKeyEnv: OPENAI_API_KEY
+        api: openai-completions
+        baseURL: https://api-slb.rayinai.com/v1
+        defaultInput: [text, image]
+        models:
+          - id: codex-auto-review
+            name: codex-auto-review
+          - id: gpt-5.5
+            name: gpt-5.5
+          - id: gpt-6.1-sol
+            name: gpt-6.1-sol
+          - id: gpt-5.6-luna
+            name: gpt-5.6-luna
+          - id: gpt-5.6-sol
+            name: gpt-5.6-sol
+          - id: gpt-5.6-terra
+            name: gpt-5.6-terra
+          - id: gpt-6-astra
+            name: gpt-6-astra
+          - id: gpt-6-luna
+            name: gpt-6-luna
+          - id: gpt-6-sol
+            name: gpt-6-sol
+      rayinai-claude:
+        displayName: Sub2API Anthropic
+        apiKeyEnv: ANTHROPIC_API_KEY
+        api: openai-completions
+        baseURL: https://api-slb.rayinai.com/v1
+        defaultInput: [text, image]
+        models:
+          - id: claude-sonnet-5
+            name: Claude Sonnet 5
+          - id: claude-opus-5-5
+            name: Claude Opus 5.5
+          - id: claude-opus-5
+            name: Claude Opus 5
+
 # 使用无需 DeepSeek 原生协议的 OpenAlex 学术搜索。
 - id: web
   config:
@@ -53,3 +106,9 @@
     baseURL: https://api.deepseek.com/anthropic/v1
     model: deepseek-v4-flash
     maxUses: 5
+
+# DeepSeek 请求扩展不是模型调用的一部分。解析失败会让 Claude 回退请求直接报 REQUEST_EXTENSION。
+- id: plugin-package-inventory-deepseek
+  disabled: true
+- id: session-log-deepseek
+  disabled: true

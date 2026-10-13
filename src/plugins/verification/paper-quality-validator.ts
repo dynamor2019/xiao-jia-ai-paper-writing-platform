@@ -63,9 +63,11 @@ export function validateMarkdownPaper(markdown: string, options: MarkdownValidat
   const displayMath = countMatches(markdown, /\$\$[\s\S]*?\$\$/g);
   const withoutDisplayMath = markdown.replace(/\$\$[\s\S]*?\$\$/g, '');
   const inlineMath = countMatches(withoutDisplayMath, /\$(?!\s)[^$\r\n]+?(?<!\s)\$/g);
-  const tableReferences = countMatches(markdown, /\bTable\s+\d+[A-Za-z]?\b/gi);
+  const tableReferences = new Set([...markdown.matchAll(/\bTable\s+(\d+[A-Za-z]?)\b/gi)]
+    .map((match) => match[1].toLowerCase())).size;
   const tables = countMarkdownTables(markdown);
-  const figureReferences = countMatches(markdown, /\b(?:Figure|Fig\.)\s+\d+[A-Za-z]?\b/gi);
+  const figureReferences = new Set([...markdown.matchAll(/\b(?:Figure|Fig\.)\s+(\d+[A-Za-z]?)\b/gi)]
+    .map((match) => match[1].toLowerCase())).size;
   const figures = countMatches(markdown, /!\[[^\]]*\]\([^\)]+\)/g);
   const theorems = countMatches(markdown, /\bTheorem\s+\d+\b/gi);
   const referenceNumbers = extractReferenceNumbers(markdown);
@@ -98,7 +100,9 @@ export function validateMarkdownPaper(markdown: string, options: MarkdownValidat
   const paragraphs = markdown.split(/\r?\n\s*\r?\n/);
   const causalCorrelation = paragraphs.find((paragraph) =>
     /\b(?:correlat\w*|associat\w*|regression|observational)\b/i.test(paragraph)
-    && /\b(?:caus\w*|driv(?:e|es|en)|lead(?:s)?\s+to|prov(?:e|es|ed)|confirm(?:s|ed)?\s+(?:that\s+)?\w*\s*mechanism)\b/i.test(paragraph)
+    && /\b(?:caus\w*|driv(?:e|es|en)|lead(?:s)?\s+to|prov(?:e|es|ed)|confirm(?:s|ed)?\s+(?:that\s+)?\w*\s*mechanism)\b/i.test(
+      paragraph.replace(/\b(?:does|do|did|can|could|would|will|may)\s+not\s+(?:[\w-]+\s+){0,3}(?:caus\w*|driv(?:e|es|en)|lead(?:s)?\s+to|prov(?:e|es|ed))\b/gi, '')
+    )
   );
   if (causalCorrelation) {
     issues.push(error('INFERENCE_CAUSAL_FROM_ASSOCIATION', '同一段落用相关、回归或观察性证据推出因果结论；必须提供因果识别设计或改为关联性措辞。'));

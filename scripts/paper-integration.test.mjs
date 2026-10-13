@@ -1,19 +1,262 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { Script } from 'node:vm';
 
-import { WORKBENCH_STAGE_LABELS, prepareProjectInput, validateApprovalStage } from '../config/dsh/web/paper-command.js';
-import { classifyWebTask, installWebModelRouter } from '../config/dsh/web/model-router.js';
+import { WORKBENCH_STAGE_LABELS, prepareProjectInput, resolveApprovalMode, resolveExperimentConfiguration, validateApprovalStage } from '../config/dsh/web/paper-command.js';
+import { classifyWebTask, inject as webRouterInject, installWebModelRouter } from '../config/dsh/web/model-router.js';
 import { buildMarkdown } from '../src/plugins/export/docx-exporter.ts';
 import { verifyCitations } from '../src/plugins/verification/citation-verifier.ts';
-import { PaperPipeline, PIPELINE_STAGES, refreshCitationContexts } from '../src/workflows/paper-pipeline.ts';
+import { PaperPipeline, PIPELINE_STAGES, refreshCitationContexts, renderArgumentBlueprint } from '../src/workflows/paper-pipeline.ts';
 import { resolvePaperModelEnv } from './paper-model-env.mjs';
+import { isRecoverablePaperFailure, resolveMaxRecoveries } from './paper-retry-policy.mjs';
+import { patchModelLatency } from './patch-dsh-model-catalog.mjs';
+
+test('Web model router declares the services read by its request handlers', () => {
+  assert.deepEqual(webRouterInject, ['llm', 'agentDefaultModel']);
+});
+
+test('paper background retries are bounded to prevent repeated upstream call costs', () => {
+  assert.equal(resolveMaxRecoveries(undefined), 3);
+  assert.equal(resolveMaxRecoveries(''), 3);
+  assert.equal(resolveMaxRecoveries('0'), 0);
+  assert.equal(resolveMaxRecoveries('2'), 2);
+  assert.equal(resolveMaxRecoveries('72'), 3);
+  assert.equal(resolveMaxRecoveries('-1'), 3);
+  assert.equal(resolveMaxRecoveries('invalid'), 3);
+});
+
+test('paper background honors pipeline decisions to stop paid retries', () => {
+  assert.equal(isRecoverablePaperFailure('Connection error: ECONNRESET'), true);
+  assert.equal(isRecoverablePaperFailure('HTTP 503 Service temporarily unavailable'), true);
+  assert.equal(isRecoverablePaperFailure('中转站上游暂不可用；为避免重复计费，已停止自动重试。稍后手动继续即可。'), false);
+});
+
+test('core academic skills are committed with the project runtime', async () => {
+  const skills = await readdir(join(process.cwd(), '.dsh', 'skills'));
+  const requiredSkills = [
+    'academic-paper-quality-gates',
+    'claude-academic-writer',
+    'literature-search',
+    'peer-review',
+    'reference-verifier',
+  ];
+  for (const skill of requiredSkills) {
+    assert.ok(skills.includes(skill), `missing project skill: ${skill}`);
+  }
+});
 
 test('workbench stages match the pipeline contract', () => {
   assert.deepEqual(WORKBENCH_STAGE_LABELS.map(([id]) => id), PIPELINE_STAGES);
+});
+
+test('unbound research tasks are routed from conversation context without asking the user to invoke commands', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-autonomy-'));
+  const previousRoot = process.env.PAPER_DATA_ROOT;
+  const previousProject = process.env.DSH_PAPER_PROJECT_DIR;
+  try {
+    process.env.PAPER_DATA_ROOT = root;
+    process.env.DSH_PAPER_PROJECT_DIR = root;
+    const { apply, inject } = await import(`../config/dsh/web/paper-command.js?autonomy=${Date.now()}`);
+    const commands = new Map();
+    const contexts = new Map();
+    const tools = new Map();
+    apply({
+      commands: { register: (command) => commands.set(command.name, command) },
+      tools: { register: (tool) => tools.set(tool.name, tool) },
+      goals: { get: () => undefined },
+      systemPrompt: { context: (context) => contexts.set(context.name, context) },
+      effect: () => {},
+    });
+
+    const instruction = contexts.get('paper:active-project').text({ agent: { id: 'session-one' } });
+    assert.match(instruction, /只有用户明确要求写论文时才调用 start_paper_workflow/);
+    assert.match(instruction, /其他对话不要注入论文流程/);
+    assert.match(commands.get('paper').input.hint, /--output-dir/);
+    assert.ok(tools.has('start_paper_workflow'));
+    assert.ok(tools.has('continue_paper_workflow'));
+    assert.ok(inject.includes('tools'));
+    assert.match(instruction, /start_paper_workflow/);
+    const deniedApproval = await tools.get('continue_paper_workflow').execute(
+      { action: 'confirm', userConfirmed: false },
+      { agent: { id: 'session-one' } },
+    );
+    assert.match(deniedApproval, /需要用户明确确认/);
+
+    const runDir = join(root, '.dsh-state', 'paper-runs');
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, 'session-bound.json'), JSON.stringify({
+      outputDir: join(root, 'output', 'paper-projects', 'paper-session-bound'),
+      paperProjectId: 'paper-session-bound',
+    }));
+    const boundInstruction = contexts.get('paper:active-project').text({ agent: { id: 'session-bound' } });
+    assert.match(boundInstruction, /continue_paper_workflow/);
+    assert.match(boundInstruction, /不要另跑 npm run paper/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.PAPER_DATA_ROOT;
+    else process.env.PAPER_DATA_ROOT = previousRoot;
+    if (previousProject === undefined) delete process.env.DSH_PAPER_PROJECT_DIR;
+    else process.env.DSH_PAPER_PROJECT_DIR = previousProject;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('paper pipeline rejects an explicit project directory outside the output root', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-output-boundary-'));
+  const outside = await mkdtemp(join(tmpdir(), 'xiaojia-paper-outside-'));
+  const previousRoot = process.env.PAPER_DATA_ROOT;
+  const previousProject = process.env.DSH_PAPER_PROJECT_DIR;
+  try {
+    process.env.PAPER_DATA_ROOT = root;
+    process.env.DSH_PAPER_PROJECT_DIR = root;
+    const { apply } = await import(`../config/dsh/web/paper-command.js?output-boundary=${Date.now()}`);
+    const commands = new Map();
+    apply({
+      commands: { register: (command) => commands.set(command.name, command) },
+      tools: { register: () => {} },
+      goals: { get: () => undefined },
+      systemPrompt: { context: () => {} },
+      effect: () => {},
+    });
+
+    const result = await commands.get('paper').handler({
+      rawInput: `Research topic --output-dir "${outside}"`,
+      agent: { id: 'session-boundary' },
+    });
+    assert.equal(result.kind, 'error');
+    assert.match(result.text, /必须位于论文输出根目录内/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.PAPER_DATA_ROOT;
+    else process.env.PAPER_DATA_ROOT = previousRoot;
+    if (previousProject === undefined) delete process.env.DSH_PAPER_PROJECT_DIR;
+    else process.env.DSH_PAPER_PROJECT_DIR = previousProject;
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test('paper pipeline binds an explicit project directory and leaves existing files intact', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-explicit-output-'));
+  const previousRoot = process.env.PAPER_DATA_ROOT;
+  const previousProject = process.env.DSH_PAPER_PROJECT_DIR;
+  const outputDir = join(root, 'output', 'papers', 'existing-project');
+  const existingFile = join(outputDir, 'existing-notes.md');
+  try {
+    process.env.PAPER_DATA_ROOT = root;
+    process.env.DSH_PAPER_PROJECT_DIR = root;
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await mkdir(outputDir, { recursive: true });
+    await writeFile(join(root, 'scripts', 'paper-background-runner.mjs'), 'process.exit(0);\n');
+    await writeFile(existingFile, '# Existing research notes\n');
+    const { apply } = await import(`../config/dsh/web/paper-command.js?explicit-output=${Date.now()}`);
+    const commands = new Map();
+    const tools = new Map();
+    apply({
+      commands: { register: (command) => commands.set(command.name, command) },
+      tools: { register: (tool) => tools.set(tool.name, tool) },
+      goals: { get: () => undefined },
+      systemPrompt: { context: () => {} },
+      effect: () => {},
+    });
+
+    const result = await tools.get('start_paper_workflow').execute({ topic: 'Research topic', outputDir }, { agent: { id: 'session-explicit-output' } });
+    const statePath = join(root, '.dsh-state', 'paper-runs', 'session-explicit-output.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    assert.match(result, /论文研究生命周期已启动/);
+    assert.equal(state.outputDir, outputDir);
+    assert.match(result, new RegExp(outputDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(await readFile(existingFile, 'utf8'), '# Existing research notes\n');
+    await new Promise((resolve, reject) => {
+      const deadline = Date.now() + 3000;
+      const check = () => {
+        try {
+          process.kill(state.pid, 0);
+          if (Date.now() >= deadline) reject(new Error('paper runner did not exit'));
+          else setTimeout(check, 25);
+        } catch {
+          resolve();
+        }
+      };
+      check();
+    });
+  } finally {
+    if (previousRoot === undefined) delete process.env.PAPER_DATA_ROOT;
+    else process.env.PAPER_DATA_ROOT = previousRoot;
+    if (previousProject === undefined) delete process.env.DSH_PAPER_PROJECT_DIR;
+    else process.env.DSH_PAPER_PROJECT_DIR = previousProject;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('workflow continuation reconciles stale Web state and resumes the same failed checkpoint', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-reconcile-'));
+  const outputDir = join(root, 'output', 'paper-projects', 'paper-session-recovery');
+  const runDir = join(root, '.dsh-state', 'paper-runs');
+  const previousRoot = process.env.PAPER_DATA_ROOT;
+  const previousProject = process.env.DSH_PAPER_PROJECT_DIR;
+  try {
+    process.env.PAPER_DATA_ROOT = root;
+    process.env.DSH_PAPER_PROJECT_DIR = root;
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await mkdir(join(outputDir, '.dsh-state'), { recursive: true });
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(root, 'scripts', 'paper-background-runner.mjs'), 'process.exit(0);\n');
+    await writeFile(join(outputDir, '.dsh-state', 'paper-pipeline-state.json'), JSON.stringify({ topic: 'Recovery topic', stage: 'protocol-design', metadata: {} }));
+    await writeFile(join(runDir, 'session-recovery.json'), JSON.stringify({
+      topic: 'Recovery topic',
+      outputDir,
+      paperProjectId: 'paper-session-recovery',
+      status: 'awaiting-confirmation',
+      stage: 'topic-confirmation',
+      approvalMode: 'topic',
+      researchDirection: {},
+    }));
+    const { apply } = await import(`../config/dsh/web/paper-command.js?reconcile=${Date.now()}`);
+    const tools = new Map();
+    const commands = new Map();
+    apply({
+      commands: { register: (command) => commands.set(command.name, command) },
+      tools: { register: (tool) => tools.set(tool.name, tool) },
+      goals: { get: () => undefined },
+      systemPrompt: { context: () => {} },
+      effect: () => {},
+    });
+
+    const workbench = await commands.get('paper-workbench').handler({ agent: { id: 'session-recovery' } });
+    assert.match(workbench.text, /当前阶段: protocol-design/);
+    assert.match(workbench.text, /后台流水线: 已失败/);
+    const staleStatus = await commands.get('paper-status').handler({ agent: { id: 'session-recovery' } });
+    assert.match(staleStatus.text, /后台流水线: 已失败/);
+    assert.match(staleStatus.text, /当前阶段: protocol-design/);
+
+    const result = await tools.get('continue_paper_workflow').execute({ action: 'resume' }, { agent: { id: 'session-recovery' } });
+    const state = JSON.parse(await readFile(join(runDir, 'session-recovery.json'), 'utf8'));
+    assert.match(result, /protocol-design 检查点恢复/);
+    assert.equal(state.status, 'running');
+    assert.equal(state.stage, 'starting');
+    await new Promise((resolve, reject) => {
+      const deadline = Date.now() + 3000;
+      const check = () => {
+        try {
+          process.kill(state.pid, 0);
+          if (Date.now() >= deadline) reject(new Error('paper runner did not exit'));
+          else setTimeout(check, 25);
+        } catch {
+          resolve();
+        }
+      };
+      check();
+    });
+  } finally {
+    if (previousRoot === undefined) delete process.env.PAPER_DATA_ROOT;
+    else process.env.PAPER_DATA_ROOT = previousRoot;
+    if (previousProject === undefined) delete process.env.DSH_PAPER_PROJECT_DIR;
+    else process.env.DSH_PAPER_PROJECT_DIR = previousProject;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('Web requests use task routes while explicit model selection stays in control', async () => {
@@ -120,7 +363,7 @@ test('Web routing does not force RayinAI when its credential is absent', async (
   }
 });
 
-test('Web routing repairs an old session that still requests RayinAI without a key', async () => {
+test('Web routing keeps a selected provider when the key is not in process.env', async () => {
   const saved = saveEnv(['OPENAI_API_KEY', 'ANTHROPIC_API_KEY']);
   delete process.env.OPENAI_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
@@ -131,20 +374,20 @@ test('Web routing repairs an old session that still requests RayinAI without a k
   try {
     installWebModelRouter({
       on: (event, handler) => handlers.set(event, handler),
-      get: () => ({ listProviders: () => [{ id: 'rayinai' }] }),
+      get: () => ({ listProviders: () => [{ id: 'rayinai' }, { id: 'rayinai-claude' }] }),
       agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }) },
       logger: { warn: () => {} },
     }, async () => []);
     const route = await handlers.get('agent/request')({ agent, turn: 1 }, async () => ({
-      provider: 'rayinai', model: 'gpt-5.6-terra', reasoningEffort: 'high',
+      provider: 'rayinai-claude', model: 'claude-sonnet-5-5', reasoningEffort: 'high',
     }));
-    assert.deepEqual(route, { provider: 'deepseek-official', model: 'deepseek-v4-flash' });
+    assert.deepEqual(route, { provider: 'rayinai-claude', model: 'claude-sonnet-5', reasoningEffort: 'high' });
   } finally {
     restoreSavedEnv(saved);
   }
 });
 
-test('Web routing retries an unsupported model selected in an old session', async () => {
+test('Web routing preserves an explicit model when no configured fallback exists', async () => {
   const saved = saveEnv(['OPENAI_API_KEY']);
   process.env.OPENAI_API_KEY = 'test-openai-key';
   const handlers = new Map();
@@ -165,8 +408,8 @@ test('Web routing retries an unsupported model selected in an old session', asyn
       agent, turn: 1, step: 1,
       failure: { code: 'PI_AI_ERROR', message: 'Model "gpt-5.6-terra" is not supported by any configured account in this group' },
     }, async () => undefined);
-    assert.deepEqual(retry, { kind: 'retry' });
-    assert.deepEqual(await request(), { provider: 'rayinai', model: 'gpt-5.6-luna' });
+    assert.equal(retry, undefined);
+    assert.deepEqual(await request(), { provider: 'rayinai', model: 'gpt-5.6-terra', reasoningEffort: 'high' });
   } finally {
     restoreSavedEnv(saved);
   }
@@ -365,12 +608,61 @@ test('approval validator accepts generated review artifacts only when present', 
     await writeFile(join(root, 'milestones', 'analysis-plan.md'), '# Plan\n');
     assert.equal(validateApprovalStage(root, { topic: 'T' }, 'protocol-design'), '');
     assert.match(validateApprovalStage(root, { topic: 'T' }, 'outline-generation'), /缺少论文大纲/);
-    assert.equal(validateApprovalStage(root, { topic: 'T', outline: { nodes: [] } }, 'outline-generation'), '');
+    const outline = { nodes: [{ id: '1', title: 'Claim', argument: 'A bounded claim', supportingPapers: ['p1'], estimatedWords: 100 }] };
+    const pipeline = { topic: 'T', outline };
+    assert.match(validateApprovalStage(root, pipeline, 'outline-generation'), /缺少论证蓝图/);
+    const blueprint = renderArgumentBlueprint('T', outline);
+    assert.match(blueprint, /A bounded claim/);
+    assert.match(blueprint, /p1/);
+    await writeFile(join(root, 'milestones', 'argument-blueprint.md'), blueprint);
+    assert.match(validateApprovalStage(root, pipeline, 'outline-generation'), /中心回答（作者确认）/);
+    assert.equal(validateApprovalStage(root, pipeline, 'outline-generation', 'topic'), '');
+    const approvedBlueprint = blueprint
+      .replace('[待作者填写：用一至两句直接回答研究问题，明确结论范围。]', '在本研究范围内，政策暴露与结果改善相关。')
+      .replace('[待作者填写：主要替代解释、结论边界与不确定性；如不适用，请说明原因。]', '可能的替代解释是同期冲击；结论不外推到未观察地区。');
+    await writeFile(join(root, 'milestones', 'argument-blueprint.md'), approvedBlueprint);
+    assert.equal(validateApprovalStage(root, pipeline, 'outline-generation'), '');
     await writeFile(join(root, 'milestones', 'submission-manifest.md'), 'Status: READY FOR AUTHOR CONFIRMATION\n');
     assert.equal(validateApprovalStage(root, { topic: 'T' }, 'submission-readiness'), '');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('workflow resume preserves the selected approval mode and defaults to topic approval', () => {
+  assert.equal(resolveApprovalMode('topic'), 'topic');
+  assert.equal(resolveApprovalMode('auto'), 'auto');
+  assert.equal(resolveApprovalMode('all'), 'all');
+  assert.equal(resolveApprovalMode(undefined), 'topic');
+});
+
+test('experiment configuration binds only project-local scripts and results', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-experiment-'));
+  try {
+    await mkdir(join(root, 'code'), { recursive: true });
+    await mkdir(join(root, 'experiments', 'results'), { recursive: true });
+    await writeFile(join(root, 'code', 'run.mjs'), 'process.exit(0);');
+    const configured = resolveExperimentConfiguration(root, 'code/run.mjs', 'experiments/results/output.csv');
+    assert.match(configured.command, /--results-file/);
+    assert.equal(configured.resultsFile, join(root, 'experiments', 'results', 'output.csv'));
+    assert.throws(() => resolveExperimentConfiguration(root, '../outside.mjs', 'experiments/results/output.csv'));
+    assert.throws(() => resolveExperimentConfiguration(root, 'code/run.mjs', '../outside.csv'));
+    assert.throws(() => resolveExperimentConfiguration(root, 'code/run.txt', 'experiments/results/output.csv'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('argument blueprint preserves author confirmations while refreshing the outline map', () => {
+  const first = renderArgumentBlueprint('Question A', { nodes: [{ id: '1', title: 'Claim A', argument: 'First claim', supportingPapers: ['p1'] }] });
+  const completed = first
+    .replace('[待作者填写：用一至两句直接回答研究问题，明确结论范围。]', 'A bounded answer.')
+    .replace('[待作者填写：主要替代解释、结论边界与不确定性；如不适用，请说明原因。]', 'Alternative B remains plausible.');
+  const refreshed = renderArgumentBlueprint('Question A', { nodes: [{ id: '1', title: 'Claim B', argument: 'Updated claim', supportingPapers: ['p2'] }] }, completed);
+  assert.match(refreshed, /A bounded answer\./);
+  assert.match(refreshed, /Alternative B remains plausible\./);
+  assert.match(refreshed, /Updated claim/);
+  assert.doesNotMatch(refreshed, /First claim/);
 });
 
 test('submission templates are generated as preserved milestone artifacts', async () => {
@@ -405,7 +697,7 @@ test('paper model settings use Web credentials when env keys are absent', async 
   }
 });
 
-test('runtime sync resets a default RayinAI model when its credential is missing', async () => {
+test('runtime sync preserves a default model and settings when its credential is missing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'xiaojia-dsh-home-'));
   const previousHome = process.env.DSH_HOME;
   const saved = saveEnv(['OPENAI_API_KEY', 'ANTHROPIC_API_KEY']);
@@ -420,13 +712,104 @@ test('runtime sync resets a default RayinAI model when its credential is missing
     const result = await syncDshRuntime();
     const settings = await readFile(join(root, 'settings.yaml'), 'utf8');
     assert.match(await readFile(join(root, 'profiles', 'web', 'paper-feedback.js'), 'utf8'), /readFeedback/);
-    assert.equal(result.repairedDefaultModel, true);
-    assert.match(settings, /provider: deepseek-official/);
-    assert.match(settings, /model: deepseek-v4-flash/);
+    assert.equal(result.repairedDefaultModel, false);
+    assert.equal(settings, 'agent-default-model:\n  provider: rayinai\n  model: gpt-5.6-terra\n');
+    await syncDshRuntime();
+    assert.equal(await readFile(join(root, 'settings.yaml'), 'utf8'), settings);
   } finally {
     if (previousHome === undefined) delete process.env.DSH_HOME;
     else process.env.DSH_HOME = previousHome;
     restoreSavedEnv(saved);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('model signal patch is valid and idempotent', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-model-signal-'));
+  const target = join(root, 'client.js');
+  try {
+    const original = await readFile(join(process.cwd(), 'node_modules', '@deepseek-ai', 'dsh-client-ui-model-selection', 'lib', 'client.js'));
+    await writeFile(target, original);
+    const expectedFirstPatch = original.includes('xiaojia-model-latency-v1') ? false : true;
+    assert.equal(patchModelLatency(target), expectedFirstPatch);
+    assert.equal(patchModelLatency(target), false);
+    const patched = await readFile(target, 'utf8');
+    assert.match(patched, /xiaojia-model-latency-v1/);
+    assert.match(patched, /eventSource\.subscribe/);
+    new Script(patched);
+    const signalSource = patched.slice(patched.indexOf('function signalLevel(ms)'), patched.indexOf('function latencyOf(provider, model)'));
+    const { signalLevel, signalGlyph } = new Script(`${signalSource}\n({ signalLevel, signalGlyph })`).runInNewContext();
+    assert.equal(signalLevel(undefined), 0);
+    assert.equal(signalLevel(500), 4);
+    assert.equal(signalLevel(1200), 3);
+    assert.equal(signalLevel(2200), 2);
+    assert.equal(signalLevel(5000), 1);
+    assert.equal(signalGlyph(500), '▂▄▆█');
+    assert.equal(signalGlyph(undefined), '····');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('runtime sync preserves settings encoding and comments without injecting providers', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-grok-settings-'));
+  const previousHome = process.env.DSH_HOME;
+  try {
+    process.env.DSH_HOME = root;
+    await writeFile(join(root, 'settings.yaml'), Buffer.from('\ufeff# user setting\r\nagent-default-model:\r\n  provider: deepseek-official\r\n  model: deepseek-v4-flash\r\n', 'utf8'));
+    const { syncDshRuntime } = await import(`./sync-dsh-runtime.mjs?format=${Date.now()}`);
+    await syncDshRuntime();
+    const bytes = await readFile(join(root, 'settings.yaml'));
+    assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+    const content = bytes.toString('utf8');
+    assert.match(content, /# user setting\r\n/);
+    assert.equal(content, '\ufeff# user setting\r\nagent-default-model:\r\n  provider: deepseek-official\r\n  model: deepseek-v4-flash\r\n');
+    assert.doesNotMatch(content, /(?<!\r)\n/);
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previousHome;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('runtime sync keeps existing provider catalogs and uses the shipped profile for defaults', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-grok-upgrade-'));
+  const previousHome = process.env.DSH_HOME;
+  try {
+    process.env.DSH_HOME = root;
+    await writeFile(join(root, 'settings.yaml'), [
+      'llm-pi-ai:',
+      '  providers:',
+      '    sub2api-grok:',
+      '      models:',
+      '        - id: grok-4.5',
+      '          name: Grok 4.5',
+      '    rayinai-claude:',
+      '      displayName: RayinAI Claude',
+      '      apiKeyEnv: ANTHROPIC_API_KEY',
+      '      api: openai-completions',
+      '      baseURL: https://code.rayinai.com',
+      '      models:',
+      '        - id: claude-opus-5',
+      '          name: claude-opus-5',
+      '',
+    ].join('\n'));
+    const { syncDshRuntime } = await import(`./sync-dsh-runtime.mjs?upgrade=${Date.now()}`);
+    const before = await readFile(join(root, 'settings.yaml'));
+    await syncDshRuntime();
+    const settings = await readFile(join(root, 'settings.yaml'), 'utf8');
+    assert.deepEqual(await readFile(join(root, 'settings.yaml')), before);
+    assert.match(settings, /id: grok-4\.5/);
+    assert.match(settings, /baseURL: https:\/\/code\.rayinai\.com/);
+    const profile = await readFile(join(root, 'profiles', 'web', 'cordis.patch.yml'), 'utf8');
+    assert.match(profile, /sub2api-grok:/);
+    assert.match(profile, /grok-4\.7/);
+    assert.match(profile, /rayinai-claude:/);
+    await syncDshRuntime();
+    assert.deepEqual(await readFile(join(root, 'settings.yaml')), before);
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previousHome;
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -447,6 +830,7 @@ test('a CLI project can be attached to a Web session', async () => {
     const commands = new Map();
     apply({
       commands: { register: (command) => commands.set(command.name, command) },
+      tools: { register: () => {} },
       goals: { get: () => undefined },
       systemPrompt: { context: () => {} },
       effect: () => {},
@@ -479,7 +863,7 @@ test('Web confirmation rejects an unreviewed topic', async () => {
     await writeFile(join(runDir, 'review-session.json'), JSON.stringify({ outputDir: projectDir, topic: 'Broad topic', status: 'awaiting-confirmation', stage: 'topic-confirmation' }));
     const { apply } = await import(`../config/dsh/web/paper-command.js?review=${Date.now()}`);
     const commands = new Map();
-    apply({ commands: { register: (command) => commands.set(command.name, command) }, goals: { get: () => undefined }, systemPrompt: { context: () => {} }, effect: () => {} });
+    apply({ commands: { register: (command) => commands.set(command.name, command) }, tools: { register: () => {} }, goals: { get: () => undefined }, systemPrompt: { context: () => {} }, effect: () => {} });
     const result = await commands.get('paper-confirm').handler({ agent: { id: 'review-session' } });
     assert.equal(result.kind, 'error');
     assert.match(result.text, /复核记录/);
@@ -508,6 +892,7 @@ test('a running CLI project stays running when attached to Web', async () => {
     const contexts = new Map();
     apply({
       commands: { register: (command) => commands.set(command.name, command) },
+      tools: { register: () => {} },
       goals: { get: () => undefined },
       systemPrompt: { context: (context) => contexts.set(context.name, context) },
       effect: () => {},
@@ -574,7 +959,7 @@ test('research feedback stays in the project and blocks submission until resolve
     await writeFile(join(runDir, 'feedback-session.json'), JSON.stringify({ outputDir: projectDir, stage: 'results-writing', status: 'completed' }));
     const { apply } = await import(`../config/dsh/web/paper-command.js?feedback=${Date.now()}`);
     const commands = new Map();
-    apply({ commands: { register: (command) => commands.set(command.name, command) }, goals: { get: () => undefined }, systemPrompt: { context: () => {} }, effect: () => {} });
+    apply({ commands: { register: (command) => commands.set(command.name, command) }, tools: { register: () => {} }, goals: { get: () => undefined }, systemPrompt: { context: () => {} }, effect: () => {} });
     const agent = { id: 'feedback-session' };
     const evidence = await commands.get('paper-evidence').handler({ agent, rawInput: 'C1.1' });
     assert.match(evidence.text, /paper-1/);

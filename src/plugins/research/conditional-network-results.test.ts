@@ -21,6 +21,15 @@ test('failed network outcomes are retained as undefined, never missing or zero',
   assert.throws(() => conditionalNetworkRows(result), /remain null/);
 });
 
+test('compact evidence retains source identity without certifying field validation', () => {
+  const source = { ...fixture(), model_id: 'source-model', system_name: '302PK01', source_roles: ['terminal_design_demands'] };
+  const evidence = JSON.parse(conditionalNetworkEvidence(source));
+  assert.equal(evidence.model_id, source.model_id);
+  assert.equal(evidence.system_name, source.system_name);
+  assert.deepEqual(evidence.source_roles, source.source_roles);
+  assert.equal(evidence.field_validation, false);
+});
+
 test('writing evidence reaches final held-out failures without sending component details', () => {
   const evidence = conditionalNetworkEvidence(fixture());
   assert.ok(evidence.length < 4000);
@@ -34,6 +43,25 @@ test('writing evidence reaches final held-out failures without sending component
   assert.equal(counts.design_scenario_count, 1);
   assert.equal(counts.held_out_scenario_count, 1);
   assert.equal(counts.record_count, 2);
+});
+
+test('held-out regret uses all feasible alternatives and never inherits the design bound', () => {
+  const source = fixture();
+  const row = source.records[0];
+  source.records = [row, { ...row, candidate_id: 'b', objective: 10 },
+    { ...row, scenario_id: 'H1', split: 'held_out', objective: 20 },
+    { ...row, candidate_id: 'b', scenario_id: 'H1', split: 'held_out', objective: 10 }];
+  const evidence = JSON.parse(conditionalNetworkEvidence(source));
+  assert.equal(evidence.scenario_best_feasible_objective_kgco2e.H1, 10);
+  const summary = evidence.selected_candidate_regret_summary.a;
+  assert.equal(summary.design.max_regret_all_scenarios_kgco2e, 2);
+  assert.equal(summary.held_out.max_regret_all_scenarios_kgco2e, 10);
+  source.records.push({ ...row, scenario_id: 'H2', split: 'held_out', model_feasible: false,
+    objective: null, reason: 'UNRESOLVED_TRANSITIONAL_FLOW' });
+  const incomplete = JSON.parse(conditionalNetworkEvidence(source));
+  assert.equal(incomplete.scenario_best_feasible_objective_kgco2e.H2, null);
+  assert.equal(incomplete.selected_candidate_regret_summary.a.held_out.max_regret_all_scenarios_kgco2e, null);
+  assert.equal(incomplete.selected_candidate_regret_summary.a.held_out.failed_or_unresolved, 1);
 });
 
 test('unknown feasibility, measured-field claims and nonexistent policy selections are rejected', () => {

@@ -19,6 +19,8 @@ const DEFAULTS = {
   figureScriptDays: 1,
   failedDays: 21,
   npmCacheDays: 30,
+  backupFileDays: 7,
+  cacheDays: 30,
   emptyDirs: true,
 };
 
@@ -30,6 +32,10 @@ const PROTECTED_SEGMENTS = new Set([
   'input',
   'references',
   'protected-customizations',
+  'experiments',
+  'delivery',
+  'figures',
+  'code',
 ]);
 
 const FIGURE_VARIANT_RE = /^(?:_?fix\d*|fix_.+|batch_fix_.+|generate_all_fixed|generate_final_figures(?:_fixed)?|generate_top_tier_.+|generate_ultra_.+|adjust_commodity_.+|generate_(?:aic_)?figure\d+_.+|make_figures)\.py$/i;
@@ -46,6 +52,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--figure-script-days=')) options.figureScriptDays = Number(arg.split('=')[1]);
     else if (arg.startsWith('--failed-days=')) options.failedDays = Number(arg.split('=')[1]);
     else if (arg.startsWith('--npm-cache-days=')) options.npmCacheDays = Number(arg.split('=')[1]);
+    else if (arg.startsWith('--backup-file-days=')) options.backupFileDays = Number(arg.split('=')[1]);
+    else if (arg.startsWith('--cache-days=')) options.cacheDays = Number(arg.split('=')[1]);
     else throw new Error(`Unknown cleanup option: ${arg}`);
   }
   return options;
@@ -144,11 +152,46 @@ async function buildPlan(options) {
     (path, pathStat) => {
       if (hasProtectedSegment(path)) return false;
       if (!olderThan(pathStat, options.figureScriptDays)) return false;
-      return /\.(tmp|temp|bak|old|part|crdownload|pyc)$/i.test(path)
+      return /\.(tmp|temp|old|part|crdownload|pyc)$/i.test(path)
         || /[\\/](_temp|tmp|temp|logs?)[\\/]/i.test(path)
         || /[\\.]dsh-state[\\/].+\.(log|tmp|temp)$/i.test(path);
     },
     `paper transient file older than ${options.tempDays} days`,
+  );
+  await addFileMatches(
+    actions,
+    papersRoot,
+    (path, pathStat) => {
+      if (hasProtectedSegment(path)) return false;
+      if (!olderThan(pathStat, options.backupFileDays)) return false;
+      return /\.bak$/i.test(path) || /\.before-[^/\\]+\.bak$/i.test(path);
+    },
+    `backup file older than ${options.backupFileDays} days`,
+  );
+  await addDirectoryMatches(
+    actions,
+    papersRoot,
+    (path, pathStat) => {
+      if (hasProtectedSegment(path)) return false;
+      if (!olderThan(pathStat, options.tempDays)) return false;
+      const name = basename(path);
+      return /^qa-gate-\d+(?:-layout|-layout-final|-final-check)$/i.test(name)
+        || /^qa-result-led-\d{8}$/i.test(name)
+        || name === 'cleanup-archive';
+    },
+    `superseded QA directory older than ${options.tempDays} days`,
+  );
+  await addDirectoryMatches(
+    actions,
+    papersRoot,
+    async (path, pathStat) => {
+      if (hasProtectedSegment(path)) return false;
+      if (!olderThan(pathStat, options.cacheDays)) return false;
+      const name = basename(path);
+      return /^(?:architecture|network-interface|parameter|AHU-neighborhood|manufacturer)-cache$/i.test(name)
+        || name === 'citation-recovery';
+    },
+    `cache directory older than ${options.cacheDays} days`,
   );
   await addFileMatches(
     actions,

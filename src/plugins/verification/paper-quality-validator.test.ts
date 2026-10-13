@@ -3,6 +3,22 @@ import test from 'node:test';
 
 import { validateMarkdownPaper } from './paper-quality-validator.js';
 
+test('repeated mentions count unique assets, while different table and figure IDs remain required', () => {
+  const report = validateMarkdownPaper('Table 1. See Table 1 and Table 2. Figure 1 is also Fig. 1, not Figure 2.',
+    { requireReferences: false, requireEmbeddedAssets: false });
+  assert.equal(report.metrics.tableReferences, 2);
+  assert.equal(report.metrics.figureReferences, 2);
+});
+
+test('explicit denial of causal identification is not an affirmative causal claim', () => {
+  const disclaimer = 'The observed association does not isolate a causal effect of larger diameters.';
+  const codes = (text: string) => validateMarkdownPaper(`# Paper\n## Results\n${text}`,
+    { requireReferences: false, requireEmbeddedAssets: false }).issues.map((issue) => issue.code);
+  assert.ok(!codes(disclaimer).includes('INFERENCE_CAUSAL_FROM_ASSOCIATION'));
+  assert.ok(codes(`${disclaimer} Correlation proves that larger diameters cause the improvement.`)
+    .includes('INFERENCE_CAUSAL_FROM_ASSOCIATION'));
+});
+
 test('blocks the known paper3 failure pattern', () => {
   const markdown = `# Paper
 ## Theory

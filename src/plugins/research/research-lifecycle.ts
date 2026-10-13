@@ -14,6 +14,7 @@ const execAsync = promisify(exec);
 const DEFAULT_DATA_ROOT = process.env.PAPER_DATA_ROOT || join(process.env.USERPROFILE || homedir(), 'Documents', 'XiaoJiaAI Data');
 const DEFAULT_OUTPUT_DIR = resolve(DEFAULT_DATA_ROOT, process.env.OUTPUT_DIR || 'output', 'paper-projects', 'current');
 interface OpenAlexWork {
+  type?: string;
   id?: string;
   doi?: string;
   display_name?: string;
@@ -25,6 +26,7 @@ interface OpenAlexWork {
 }
 
 interface CrossrefWork {
+  type?: string;
   DOI?: string;
   URL?: string;
   title?: string[];
@@ -397,6 +399,7 @@ async function searchOpenAlex(query: string, count: number): Promise<Paper[]> {
     url: work.doi || work.primary_location?.landing_page_url || work.id,
     citations: work.cited_by_count || 0,
     source: 'manual' as const,
+    tags: work.type ? [`publication:${work.type}`, 'metadata:openalex'] : [],
   }));
 }
 
@@ -439,6 +442,7 @@ async function searchCrossref(query: string, count: number): Promise<Paper[]> {
     url: work.URL || id,
     citations: work['is-referenced-by-count'] || 0,
     source: 'manual' as const,
+    tags: work.type ? [`publication:${work.type}`, 'metadata:crossref'] : [],
   }));
 }
 

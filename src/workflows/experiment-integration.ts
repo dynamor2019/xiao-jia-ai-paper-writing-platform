@@ -46,12 +46,28 @@ function validateReference(root: string, reference: string): string {
   return hash;
 }
 
+/** Find the same project-relative file after the project directory itself was moved. */
+function relocatedCopy(state: PipelineState, stored: string): string | undefined {
+  const root = state.metadata.outputDir;
+  if (!root) return undefined;
+  const normalized = stored.replace(/\\/g, '/');
+  const base = resolve(root).replace(/\\/g, '/').split('/').filter(Boolean).at(-1);
+  if (!base) return undefined;
+  const marker = `/${base}/`;
+  const index = normalized.lastIndexOf(marker);
+  if (index < 0) return undefined;
+  const candidate = resolve(root, normalized.slice(index + marker.length));
+  return existsSync(candidate) ? candidate : undefined;
+}
+
 /** Return the frozen replay protocol only while its bytes remain unchanged. */
 export function integratedProtocol(state: PipelineState): string | undefined {
   const record = (state as IntegratedState).experimentIntegration;
   if (!record) return undefined;
-  if (fingerprint(record.protocolFile) !== record.protocolHash) throw new Error('Integrated protocol changed; explicit amendment and revalidation required');
-  return record.protocolFile;
+  const path = existsSync(record.protocolFile) ? record.protocolFile : relocatedCopy(state, record.protocolFile);
+  if (!path) throw new Error(`Integrated protocol file is missing: ${record.protocolFile}`);
+  if (fingerprint(path) !== record.protocolHash) throw new Error('Integrated protocol changed; explicit amendment and revalidation required');
+  return path;
 }
 
 /** Resolve new audit artifacts without overwriting the historical experiment's reports. */

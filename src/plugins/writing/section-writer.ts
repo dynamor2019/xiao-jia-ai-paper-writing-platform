@@ -7,6 +7,7 @@
 
 import { getModelClient } from '../../lib/model-client.js';
 import { selectBalancedLiterature } from '../../lib/literature-balance.js';
+import { ACADEMIC_STYLE_INSTRUCTIONS } from './academic-style.js';
 import type { OutlineNode, Paper, PaperNote, Section, Citation, ToolResult } from '../../types.js';
 
 const SYSTEM_PROMPT = `你是一位严格的学术论文共同作者，擅长把证据组织成可投稿正文。
@@ -24,7 +25,9 @@ const SYSTEM_PROMPT = `你是一位严格的学术论文共同作者，擅长把
 11. 相关、回归和观察性比较只能写关联，除非给出了可核验的因果识别设计
 12. 不得从图注、前文、模型记忆或手算恢复 P 值、效应量、相关系数、置信区间或倍数
 13. 实证与计量段落须命名识别策略并报告其假设检验，系数须换算为经济或工程意义（弹性/单位/相对基线），不得只写显著性与方向
-14. 段落先说明证据支持的要点，再展开依据；用具体范围和不确定性来源替代多重模糊对冲，必要的方法限制在相关位置准确说明，不得删除或淡化`;
+14. 段落先说明证据支持的要点，再展开依据；用具体范围和不确定性来源替代多重模糊对冲，必要的方法限制在相关位置准确说明，不得删除或淡化
+
+${ACADEMIC_STYLE_INSTRUCTIONS}`;
 
 export interface WriteSectionOptions {
   previousSections?: Section[]; // 已完成的前文（用于上下文衔接）
@@ -217,14 +220,15 @@ function buildLiteratureSupport(
 /** 从正文中提取引用标记 */
 export function extractCitations(content: string, papers: Paper[]): Citation[] {
   const citations: Citation[] = [];
-  const regex = /\[(\d+)\]/g;
+  const regex = /\[(\d+)\]|\([A-Z][^()\n]*,\s*(?:19|20)\d{2}[a-z]?\)/g;
   let match: RegExpExecArray | null;
 
   while ((match = regex.exec(content)) !== null) {
-    const idx = parseInt(match[1], 10) - 1;
-    const paper = papers[idx];
+    const paper = match[1]
+      ? papers[parseInt(match[1], 10) - 1]
+      : papers.find((item) => (item as Paper & { citationLabel?: string }).citationLabel === match![0]);
     citations.push({
-      paperId: paper?.id || `missing-reference-${match[1]}`,
+      paperId: paper?.id || `missing-reference-${match[1] || match[0]}`,
       marker: match[0],
       verified: false,
       rawText: citationContext(content, match.index),

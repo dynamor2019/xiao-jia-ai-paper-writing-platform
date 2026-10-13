@@ -20,8 +20,8 @@ function replaceOnce(source, needle, replacement, label) {
   return source.replace(needle, replacement);
 }
 
-export function patchTodoStoppedStatus() {
-  let source = readFileSync(CLIENT_BUNDLE, 'utf8');
+export function patchTodoStoppedStatus(bundlePath = CLIENT_BUNDLE) {
+  let source = readFileSync(bundlePath, 'utf8');
   const brokenDock = '\t\tfunction TodoDock({ useProjection, t }) {\n\t\t\tconst running = useSession((session) => session.running) ?? false;';
   if (source.includes(PATCH_MARKER)) {
     if (!source.includes(brokenDock)) return false;
@@ -29,7 +29,7 @@ export function patchTodoStoppedStatus() {
       brokenDock,
       '\t\tfunction TodoDock({ useProjection, useSession, t }) {\n\t\t\tconst running = useSession((session) => session.running) ?? false;',
     );
-    writeFileSync(CLIENT_BUNDLE, source, 'utf8');
+    writeFileSync(bundlePath, source, 'utf8');
     return true;
   }
 
@@ -76,10 +76,11 @@ export function patchTodoStoppedStatus() {
     '\t\t\t\t\t\t\t\tchildren: progressLabel(todos, t, running)',
     '任务摘要调用',
   );
+  const dockHasSession = source.includes('\t\tfunction TodoDock({ useProjection, useSession, t }) {');
   source = replaceOnce(
     source,
     [
-      '\t\tfunction TodoDock({ useProjection, useSession, t }) {',
+      dockHasSession ? '\t\tfunction TodoDock({ useProjection, useSession, t }) {' : '\t\tfunction TodoDock({ useProjection, t }) {',
       '\t\t\treturn (0, react_jsx_runtime.jsx)(TodoPanel, {',
       '\t\t\t\ttodos: useProjection("todos") ?? [],',
       '\t\t\t\tt',
@@ -87,7 +88,7 @@ export function patchTodoStoppedStatus() {
       '\t\t}',
     ].join(eol),
     [
-      '\t\tfunction TodoDock({ useProjection, t }) {',
+      '\t\tfunction TodoDock({ useProjection, useSession, t }) {',
       '\t\t\tconst running = useSession((session) => session.running) ?? false;',
       '\t\t\treturn (0, react_jsx_runtime.jsx)(TodoPanel, {',
       '\t\t\t\ttodos: useProjection("todos") ?? [],',
@@ -99,7 +100,7 @@ export function patchTodoStoppedStatus() {
     '会话运行状态绑定',
   );
 
-  writeFileSync(CLIENT_BUNDLE, source, 'utf8');
+  writeFileSync(bundlePath, source, 'utf8');
   return true;
 }
 

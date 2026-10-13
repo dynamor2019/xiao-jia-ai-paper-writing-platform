@@ -26,29 +26,29 @@ export interface ModelRoute {
 
 /** 默认路由配置（可被 .env 中的 ROUTE_XXX 覆盖） */
 const DEFAULT_ROUTES: Record<TaskType, ModelRoute> = {
-  discovery: { provider: 'claude', model: 'claude-opus-5' },  // 选题：使用最强推理模型综合联网证据
-  protocol:  { provider: 'claude', model: 'claude-opus-5' }, // 方案：独立审查假设、对照和统计设计
-  summary:   { provider: 'claude', model: 'claude-sonnet-5' }, // 文献精读：需要提取可核验论据
-  outline:   { provider: 'claude', model: 'claude-opus-5' },  // 大纲：决定论证链和贡献点
-  writing:   { provider: 'claude', model: 'claude-sonnet-5' },  // 正文：优先严谨、结构和证据约束
-  coherence: { provider: 'claude', model: 'claude-sonnet-5' }, // 连贯性：检查论证断裂和重复
-  citation:  { provider: 'claude', model: 'claude-opus-5' }, // 引用核验：宁严勿松
-  quality:   { provider: 'claude', model: 'claude-opus-5' },  // 独立审查：与正文写作模型分离
-  qualityCrossReview: { provider: 'claude', model: 'claude-sonnet-5' }, // 交叉审查：第二模型模拟审稿专家
-  polish:    { provider: 'claude', model: 'claude-sonnet-5' }, // 润色：保守改写，不新增事实
+  discovery: { provider: 'openai', model: 'gpt-5.6-sol' },  // 选题：使用最强推理模型综合联网证据
+  protocol:  { provider: 'openai', model: 'gpt-6-astra' }, // 方案：独立审查假设、对照和统计设计
+  summary:   { provider: 'openai', model: 'gpt-5.6-sol' }, // 文献精读：需要提取可核验论据
+  outline:   { provider: 'openai', model: 'gpt-6-astra' },  // 大纲：决定论证链和贡献点
+  writing:   { provider: 'openai', model: 'gpt-5.6-sol' },  // 正文：优先严谨、结构和证据约束
+  coherence: { provider: 'openai', model: 'gpt-5.6-sol' }, // 连贯性：检查论证断裂和重复
+  citation:  { provider: 'openai', model: 'gpt-6-astra' }, // 引用核验：宁严勿松
+  quality:   { provider: 'openai', model: 'gpt-6-astra' },  // 独立审查：与正文写作模型分离
+  qualityCrossReview: { provider: 'openai', model: 'gpt-5.6-sol' }, // 交叉审查：第二模型模拟审稿专家
+  polish:    { provider: 'openai', model: 'gpt-5.6-sol' }, // 润色：保守改写，不新增事实
 };
 
 const DEFAULT_FALLBACK_ROUTES: Record<TaskType, ModelRoute> = {
-  discovery: { provider: 'claude', model: 'claude-opus-5' },
-  protocol: { provider: 'openai', model: 'gpt-5.6-sol' },
-  summary: { provider: 'claude', model: 'claude-sonnet-5' },
-  outline: { provider: 'openai', model: 'gpt-5.6-sol' },
+  discovery: { provider: 'openai', model: 'gpt-5.6-sol' },
+  protocol: { provider: 'openai', model: 'gpt-6-astra' },
+  summary: { provider: 'openai', model: 'gpt-5.6-sol' },
+  outline: { provider: 'openai', model: 'gpt-6-astra' },
   writing: { provider: 'openai', model: 'gpt-5.6-sol' },
-  coherence: { provider: 'claude', model: 'claude-sonnet-5' },
-  citation: { provider: 'claude', model: 'claude-sonnet-5' },
-  quality: { provider: 'openai', model: 'gpt-5.6-sol' },
-  qualityCrossReview: { provider: 'claude', model: 'claude-opus-5' },
-  polish: { provider: 'claude', model: 'claude-sonnet-5' },
+  coherence: { provider: 'openai', model: 'gpt-5.6-sol' },
+  citation: { provider: 'openai', model: 'gpt-6-astra' },
+  quality: { provider: 'openai', model: 'gpt-6-astra' },
+  qualityCrossReview: { provider: 'openai', model: 'gpt-5.6-sol' },
+  polish: { provider: 'openai', model: 'gpt-5.6-sol' },
 };
 
 /**

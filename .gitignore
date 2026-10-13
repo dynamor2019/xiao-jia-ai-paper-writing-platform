@@ -12,5 +12,8 @@ temp/
 *.log
 __pycache__/
 *.pyc
+*.bak
+*.clixml
+.workbuddy/
 *.zip
 ~$*

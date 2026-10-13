@@ -12,6 +12,7 @@ import {
   type ModelProvider,
   type TaskType,
 } from '../config/model-routing.js';
+import { readResponsesStream } from './responses-stream.js';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -135,7 +136,7 @@ export class ModelClient {
    * 判断模型是否使用 Responses API（gpt-5.x 系列在中转站只支持 Responses API）
    */
   private useResponsesApi(model: string): boolean {
-    return /gpt-5/i.test(model) || process.env.OPENAI_USE_RESPONSES_API === 'true';
+    return /^gpt-(?:5|6)(?:[.-]|$)/i.test(model) || process.env.OPENAI_USE_RESPONSES_API === 'true';
   }
 
   /**
@@ -158,13 +159,14 @@ export class ModelClient {
   private async chatOpenAIResponses(
     messages: ChatMessage[],
     model: string,
-    options: ChatOptions
+    options: ChatOptions,
+    provider: ModelProvider = 'openai'
   ): Promise<ChatResponse> {
-    const apiKey = getApiKey('openai');
-    const baseUrl = getBaseUrl('openai');
+    const apiKey = getApiKey(provider);
+    const baseUrl = getBaseUrl(provider);
 
     if (!apiKey) {
-      throw new Error('OPENAI_API_KEY 未配置，请在 .env 中填写');
+      throw new Error(`${provider === 'claude' ? 'ANTHROPIC' : 'OPENAI'}_API_KEY 未配置，请在 .env 中填写`);
     }
 
     // Responses API 的 input 格式
@@ -175,6 +177,8 @@ export class ModelClient {
       model,
       input: conversationMsgs,
       max_output_tokens: options.maxTokens ?? 4096,
+      stream: true,
+      store: false,
     };
 
     if (systemMsg) {
@@ -186,27 +190,27 @@ export class ModelClient {
     }
 
     // 推理努力
-    const effort = process.env.OPENAI_REASONING_EFFORT;
+    const effort = provider === 'openai' ? process.env.OPENAI_REASONING_EFFORT : undefined;
     if (effort) {
       body.reasoning = { effort };
     }
 
-    const response = await fetch(`${baseUrl}/responses`, {
+    const response = await fetch(buildApiUrl(baseUrl, '/responses'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 120000)),
+      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 300000)),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`[OpenAI ${model} Responses] 调用失败 [${response.status}]: ${errorText}`);
+      throw new Error(`[${provider} ${model} Responses] 调用失败 [${response.status}]: ${errorText}`);
     }
 
-    const data = await parseJsonResponse(response, `OpenAI ${model} Responses`);
+    const data = await parseJsonResponse(response, `${provider} ${model} Responses`);
 
     // 解析 Responses API 输出
     const output = (data.output as Array<Record<string, unknown>>) || [];
@@ -223,11 +227,11 @@ export class ModelClient {
     }
 
     const usage = (data.usage as Record<string, number>) || {};
-    assertNonEmptyResponse(text, 'openai', model, usage.output_tokens || 0);
+    assertNonEmptyResponse(text, provider, model, usage.output_tokens || 0);
 
     return {
       content: text,
-      provider: 'openai' as const,
+      provider,
       model,
       usage: {
         promptTokens: usage.input_tokens || 0,
@@ -266,7 +270,7 @@ export class ModelClient {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 120000)),
+      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 300000)),
     });
 
     if (!response.ok) {
@@ -308,6 +312,10 @@ export class ModelClient {
       throw new Error('ANTHROPIC_API_KEY 未配置，请在 .env 中填写');
     }
 
+    if (process.env.ANTHROPIC_API_MODE?.trim().toLowerCase() === 'openai-responses') {
+      return this.chatOpenAIResponses(messages, model, options, 'claude');
+    }
+
     if (useClaudeOpenAICompatibility(baseUrl)) {
       return this.chatClaudeCompletions(messages, model, options, apiKey, baseUrl);
     }
@@ -340,7 +348,7 @@ export class ModelClient {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 120000)),
+      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 300000)),
     });
 
     if (!response.ok) {
@@ -388,7 +396,7 @@ export class ModelClient {
         temperature: options.temperature ?? 0.2,
         max_tokens: options.maxTokens ?? 4096,
       }),
-      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 120000)),
+      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 300000)),
     });
     if (!response.ok) {
       const errorText = await response.text();
@@ -448,6 +456,7 @@ class ModelRequestError extends Error {
 
 async function parseJsonResponse(response: Response, label: string): Promise<Record<string, unknown>> {
   const contentType = response.headers.get('content-type') || '';
+  if (contentType.toLowerCase().includes('text/event-stream')) return readResponsesStream(response, label);
   const text = await response.text();
   const trimmed = text.trimStart();
 

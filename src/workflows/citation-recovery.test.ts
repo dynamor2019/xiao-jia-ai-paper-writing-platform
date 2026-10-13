@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -12,6 +12,55 @@ test('refresh preserves paragraph context including decimal quantities', () => {
     papers: [{ id: 'source-1' }], notes: new Map() } as unknown as PipelineState;
   refreshDraftCitations(state);
   assert.equal(state.sections[0].citations[0].rawText, state.sections[0].content);
+});
+
+test('a changed reviewer model cannot reuse a previous model assessment', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'citation-model-cache-'));
+  const previous = process.env.ROUTE_CITATION_MODEL;
+  try {
+    const state = { sections: [{ content: 'Unsupported attribution [1].', citations: [] }],
+      papers: [{ id: 'one', abstract: 'Spatial routing' }], notes: new Map() } as unknown as PipelineState;
+    refreshDraftCitations(state);
+    const failures = [{ citation: state.sections[0].citations[0], status: 'mismatch' as const, reason: 'Wrong attribution' }];
+    const generate = context.mock.method(getModelClient(), 'generate', async (system: string) =>
+      system.startsWith('Repair') ? JSON.stringify({ content: 'Spatial routing is addressed [1].' })
+        : JSON.stringify({ supported: true, reason: 'Source passage supports spatial routing' }));
+    const options = { evidence: '', cacheDir: directory };
+    process.env.ROUTE_CITATION_MODEL = 'reviewer-a';
+    assert.equal(await recoverDraftCitations(state, failures, options, () => {}), 1);
+    state.sections[0].content = 'Unsupported attribution [1].';
+    process.env.ROUTE_CITATION_MODEL = 'reviewer-b';
+    assert.equal(await recoverDraftCitations(state, failures, options, () => {}), 1);
+    assert.equal(generate.mock.callCount(), 3);
+  } finally {
+    if (previous === undefined) delete process.env.ROUTE_CITATION_MODEL;
+    else process.env.ROUTE_CITATION_MODEL = previous;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('current-study evidence is distinct from literature and still independently audited', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'citation-study-scope-'));
+  try {
+    const state = { sections: [{ content: 'The cited paper evaluated 27 candidates [1].', citations: [] }],
+      papers: [{ id: 'source', abstract: 'Spatial routing only' }], notes: new Map() } as unknown as PipelineState;
+    refreshDraftCitations(state);
+    const failures = [{ citation: state.sections[0].citations[0], status: 'mismatch' as const, reason: 'Wrong attribution' }];
+    context.mock.method(getModelClient(), 'generate', async (system: string, prompt: string) => {
+      assert.match(prompt, /This study evaluated 27 candidates/);
+      if (system.startsWith('Repair')) return JSON.stringify({ content: 'This study evaluated 27 candidates under disclosed assumptions.' });
+      assert.match(system, /do NOT require literature attribution/);
+      return JSON.stringify({ supported: true, reason: 'Current-study experiment explicitly records 27 candidates' });
+    });
+    let saves = 0;
+    assert.equal(await recoverDraftCitations(state, failures,
+      { evidence: 'This study evaluated 27 candidates', cacheDir: directory }, () => { saves++; }), 1);
+    assert.equal(saves, 1);
+    assert.equal(state.sections[0].citations.length, 0);
+    assert.equal(state.sections[0].content, 'This study evaluated 27 candidates under disclosed assumptions.');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('marker context excludes claims attributed to different papers and keeps decimal quantities', () => {
@@ -45,6 +94,61 @@ test('audit rejection guides one bounded revision and cached resume never repeat
     state.sections[0].content = 'Invented saving [1].';
     assert.equal(await recoverDraftCitations(state, failures, options, () => {}), 1);
     assert.equal(generate.mock.callCount(), 4);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('third revision receives the last rejection and all failed attempts stay cached', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'citation-third-feedback-'));
+  try {
+    const state = { sections: [{ content: 'Unsupported claim [1].', citations: [] }],
+      papers: [{ id: 'source', abstract: 'Spatial routing only' }], notes: new Map() } as unknown as PipelineState;
+    refreshDraftCitations(state);
+    const failures = [{ citation: state.sections[0].citations[0], status: 'mismatch' as const, reason: 'Wrong attribution' }];
+    let revisions = 0;
+    const generate = context.mock.method(getModelClient(), 'generate', async (system: string, prompt: string) => {
+      if (system.startsWith('Repair')) {
+        revisions++;
+        if (revisions === 3) assert.match(prompt, /Unsupported schedule/);
+        return JSON.stringify({ content: `Unsupported revision ${revisions} [1].` });
+      }
+      return JSON.stringify({ supported: false, reason: 'Unsupported schedule' });
+    });
+    const options = { evidence: 'Annual hours only', cacheDir: directory };
+    const save = () => assert.fail('Rejected assertions must never be saved');
+    assert.equal(await recoverDraftCitations(state, failures, options, save), 0);
+    assert.equal(revisions, 3);
+    assert.equal(generate.mock.callCount(), 6);
+    assert.equal(await recoverDraftCitations(state, failures, options, save), 0);
+    assert.equal(generate.mock.callCount(), 6);
+    assert.equal(state.sections[0].content, 'Unsupported claim [1].');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('exhausted optional discussion is archived, while methods and sole paragraphs are retained', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'citation-optional-discussion-'));
+  try {
+    let revisions = 0;
+    context.mock.method(getModelClient(), 'generate', async (system: string) => system.startsWith('Repair')
+      ? JSON.stringify({ content: `Unsupported revision ${++revisions} [1].` })
+      : JSON.stringify({ supported: false, reason: 'No supporting evidence' }));
+    for (const [title, second, expected] of [
+      ['Implications for BIM design', '\n\nRetained model limitation.', 1],
+      ['Methods', '\n\nRetained model limitation.', 0],
+      ['Future work', '', 0],
+    ] as const) {
+      const original = `Unsupported ${title} assertion [1].${second}`;
+      const state = { sections: [{ id: title, title, content: original, citations: [] }],
+        papers: [{ id: 'source', abstract: 'Spatial routing only' }], notes: new Map() } as unknown as PipelineState;
+      refreshDraftCitations(state);
+      const failures = [{ citation: state.sections[0].citations[0], status: 'mismatch' as const, reason: 'Wrong attribution' }];
+      assert.equal(await recoverDraftCitations(state, failures, { evidence: '', cacheDir: directory }, () => {}), expected);
+      assert.equal(state.sections[0].content, expected ? 'Retained model limitation.' : original);
+    }
+    assert.equal(readdirSync(join(directory, 'omitted-discussion')).length, 1);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

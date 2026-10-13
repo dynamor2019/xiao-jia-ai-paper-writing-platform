@@ -108,6 +108,14 @@ export interface PipelineState {
     inputDir?: string;
     paperProjectId?: string;
     awaitingApproval?: PipelineStage;
+    draftMarkers?: string[];
+    pendingQuestion?: {
+      id: string;
+      stage: PipelineStage;
+      question: string;
+      choices: { id: string; label: string }[];
+      answer?: string;
+    };
     researchDirection?: {
       focus?: string;
       scope?: string;

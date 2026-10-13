@@ -11,22 +11,27 @@ import { patchEmptyToolCallRetry } from './patch-dsh-empty-tool-call.mjs';
 import { patchWebAllLite } from './patch-dsh-web-all-lite.mjs';
 import { patchJournalSelector } from './patch-dsh-journal-ui.mjs';
 import { patchTodoStoppedStatus } from './patch-dsh-todo-status.mjs';
-import { patchModelCatalog } from './patch-dsh-model-catalog.mjs';
+import { patchModelCatalog, patchModelLatency } from './patch-dsh-model-catalog.mjs';
 import { patchUniverExecuteSchema } from './patch-dsh-univer-execute.mjs';
 import { patchWorkbenchDocxPreview } from './patch-dsh-workbench-docx-preview.mjs';
 import { patchWorkbenchFloating } from './patch-dsh-workbench-floating.mjs';
+import { patchWorkbenchEvents } from './patch-dsh-workbench-events.mjs';
 import { patchWorkbenchPylustrator } from './patch-dsh-workbench-pylustrator.mjs';
 import { patchIncompatibleUiBundles } from './patch-dsh-incompatible-ui-bundles.mjs';
 import { patchDshBranding } from './patch-dsh-branding.mjs';
+import { patchDshPreviewBadge } from './patch-dsh-preview-badge.mjs';
+import { patchDshWelcomeNotice } from './patch-dsh-welcome-notice.mjs';
 import { syncDshRuntime } from './sync-dsh-runtime.mjs';
 import { resolvePaperModelEnv } from './paper-model-env.mjs';
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
+import { resolveWebProxyEnv } from './web-proxy-env.mjs';
+import { runStartupPatch } from './startup-patch.mjs';
 
 const binPath = join(PROJECT_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
 const dataRoot = resolveDataRoot();
 const stateDir = resolve(dataRoot, process.env.PAPER_STATE_DIR || '.dsh-state');
 const tempDir = resolve(stateDir, 'tmp');
-const webWorkspace = resolve(process.env.DSH_WEB_WORKSPACE || join(dataRoot, 'output'));
+const webWorkspace = resolve(process.env.DSH_WEB_WORKSPACE || join(PROJECT_ROOT, 'output'));
 const npmPrefix = process.env.DSH_NPM_PREFIX || join(process.env.APPDATA || join(process.env.USERPROFILE || '', 'AppData', 'Roaming'), 'npm');
 const npmCache = process.env.DSH_NPM_CACHE || join(stateDir, 'npm-cache');
 const lockPath = join(stateDir, 'web-supervisor.lock.json');
@@ -70,16 +75,6 @@ if (!existsSync(binPath)) {
   process.exit(1);
 }
 
-function runStartupPatch(label, patch) {
-  try {
-    return patch();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`${label}跳过：${message}`);
-    return false;
-  }
-}
-
 function runPeriodicCleanup() {
   if (process.env.DSH_AUTO_CLEANUP === 'false') return;
   const intervalDays = Number(process.env.DSH_AUTO_CLEANUP_DAYS || '1');
@@ -117,23 +112,26 @@ Object.assign(process.env, resolvedModelEnv);
 
 const synced = await syncDshRuntime();
 console.log(`论文平台配置已同步（${synced.skills} 个 skills）。`);
+
 process.env.DSH_PERMISSION_MODE ||= 'danger-full-access';
-const patchedTools = runStartupPatch('全权限工具兼容补丁', patchFullAccessToolSchemas);
-console.log(`全权限工具兼容补丁已检查（更新 ${patchedTools} 个工具）。`);
-const patchedUniver = runStartupPatch('Univer 执行参数补丁', patchUniverExecuteSchema);
-console.log(`Univer 执行参数补丁已检查（更新 ${patchedUniver} 个运行时）。`);
-console.log(`全家桶轻量兼容补丁已检查（${runStartupPatch('全家桶轻量兼容补丁', patchWebAllLite) ? '已更新' : '无需更新'}）。`);
-console.log(`不兼容 UI 插件禁用补丁已检查（${runStartupPatch('不兼容 UI 插件禁用补丁', patchIncompatibleUiBundles) ? '已更新' : '无需更新'}）。`);
-console.log(`小贾AI 品牌补丁已检查（${runStartupPatch('小贾AI 品牌补丁', patchDshBranding) ? '已更新' : '无需更新'}）。`);
-console.log(`文件工作台右上角入口补丁已检查（${runStartupPatch('文件工作台右上角入口补丁', patchWorkbenchFloating) ? '已更新' : '无需更新'}）。`);
-console.log(`文件工作台 Word 预览补丁已检查（更新 ${runStartupPatch('文件工作台 Word 预览补丁', patchWorkbenchDocxPreview)} 个文件）。`);
-console.log(`文件工作台 Pylustrator 入口补丁已检查（更新 ${runStartupPatch('文件工作台 Pylustrator 入口补丁', patchWorkbenchPylustrator)} 个文件）。`);
+runStartupPatch('全权限工具兼容补丁', patchFullAccessToolSchemas);
+runStartupPatch('Univer 执行参数补丁', patchUniverExecuteSchema);
+runStartupPatch('全家桶轻量兼容补丁', patchWebAllLite);
+runStartupPatch('不兼容 UI 插件禁用补丁', patchIncompatibleUiBundles);
+runStartupPatch('小贾AI 品牌补丁', patchDshBranding);
+runStartupPatch('预览版徽标移除补丁', patchDshPreviewBadge);
+runStartupPatch('预览版说明弹窗关闭补丁', patchDshWelcomeNotice);
+runStartupPatch('文件工作台右上角入口补丁', patchWorkbenchFloating);
+runStartupPatch('文件工作台共享事件订阅补丁', patchWorkbenchEvents);
+runStartupPatch('文件工作台 Word 预览补丁', patchWorkbenchDocxPreview);
+runStartupPatch('文件工作台 Pylustrator 入口补丁', patchWorkbenchPylustrator);
 runStartupPatch('期刊与论文工作台补丁', patchJournalSelector);
-console.log(`快捷继续按钮补丁已检查（${runStartupPatch('快捷继续按钮补丁', patchContinueButton) ? '已更新' : '无需更新'}）。`);
-console.log(`编辑失败恢复补丁已检查（${runStartupPatch('编辑失败恢复补丁', patchEditRecovery) ? '已更新' : '无需更新'}）。`);
-console.log(`空工具调用重试补丁已检查（${runStartupPatch('空工具调用重试补丁', patchEmptyToolCallRetry) ? '已更新' : '无需更新'}）。`);
-console.log(`任务停止状态补丁已检查（${runStartupPatch('任务停止状态补丁', patchTodoStoppedStatus) ? '已更新' : '无需更新'}）。`);
-console.log(`模型列表加载补丁已检查（${runStartupPatch('模型列表加载补丁', patchModelCatalog) ? '已更新' : '无需更新'}）。`);
+runStartupPatch('快捷继续按钮补丁', patchContinueButton);
+runStartupPatch('编辑失败恢复补丁', patchEditRecovery);
+runStartupPatch('空工具调用重试补丁', patchEmptyToolCallRetry);
+runStartupPatch('任务停止状态补丁', patchTodoStoppedStatus);
+runStartupPatch('模型列表加载补丁', patchModelCatalog);
+runStartupPatch('模型延迟信号补丁', patchModelLatency);
 
 mkdirSync(stateDir, { recursive: true });
 mkdirSync(tempDir, { recursive: true });
@@ -191,12 +189,15 @@ function acquireSupervisorLock() {
   ownsLock = true;
 }
 
-function runDsh() {
+async function runDsh() {
   let openedBrowser = false;
+  const proxyEnv = await resolveWebProxyEnv(process.env);
   child = spawn(process.execPath, [binPath, 'web', '--no-open'], {
     cwd: webWorkspace,
     env: {
       ...process.env,
+      ...proxyEnv,
+      MODEL_TIMEOUT_MS: process.env.MODEL_TIMEOUT_MS || '300000',
       TEMP: tempDir,
       TMP: tempDir,
       TMPDIR: tempDir,
@@ -302,10 +303,25 @@ if (await isHealthy()) {
   process.exit(0);
 }
 
+// 启动配置监控：持续修复 settings.yaml.imported 中被 dsh 还原的 api 类型
+{
+  const watcherPath = join(PROJECT_ROOT, 'scripts', 'config-watcher.mjs');
+  if (existsSync(watcherPath)) {
+    const watcher = spawn(process.execPath, [watcherPath], {
+      cwd: PROJECT_ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
+    });
+    watcher.stdout.on('data', (chunk) => process.stdout.write(chunk));
+    watcher.stderr.on('data', (chunk) => process.stderr.write(chunk));
+    console.log('[config-watcher] 配置监控进程已启动');
+  }
+}
+
 let restartCount = 0;
 while (!stopping) {
   logSupervisor(restartCount === 0 ? '正在启动 Web 服务。' : `正在执行第 ${restartCount} 次自动重启。`);
-  const result = await waitForExit(runDsh());
+  const result = await waitForExit(await runDsh());
   if (stopping) break;
   restartCount += 1;
   logSupervisor(`Web 服务退出（code=${result.code ?? 'null'}, signal=${result.signal ?? 'none'}）。`);

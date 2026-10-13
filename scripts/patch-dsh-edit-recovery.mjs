@@ -20,6 +20,7 @@ const FS_LOCAL_TARGET = join(
 );
 
 const PATCH_MARKER = 'FS_EDIT_NOT_FOUND: "read the current file content, copy an exact old_string from it, then retry the edit"';
+const RECOVERY_GUIDANCE = 'read the current file content, copy an exact old_string from it, then retry the edit';
 const FUZZY_PATCH_MARKER = 'function applyWhitespaceTolerantEdit(content, oldNorm, newNorm, replaceAll, displayPath) {';
 
 function replaceOnce(source, needle, replacement, label) {
@@ -31,9 +32,9 @@ function replaceOnce(source, needle, replacement, label) {
   return source.replace(needle, replacement);
 }
 
-function patchToolFs() {
-  let source = readFileSync(TOOL_FS_TARGET, 'utf8');
-  if (source.includes(PATCH_MARKER)) return false;
+function patchToolFs(target) {
+  let source = readFileSync(target, 'utf8');
+  if (source.includes(RECOVERY_GUIDANCE)) return undefined;
 
   const eol = source.includes('\r\n') ? '\r\n' : '\n';
   const remediesAnchor = [
@@ -49,23 +50,32 @@ function patchToolFs() {
     `\t${PATCH_MARKER}`,
     '};',
   ].join(eol);
-  source = replaceOnce(source, remediesAnchor, remediesReplacement, '错误恢复映射');
+  if (source.includes(remediesAnchor)) {
+    source = replaceOnce(source, remediesAnchor, remediesReplacement, '错误恢复映射');
+  } else {
+    const errorAnchor = '\tif (error.code === "FS_STALE_VERSION")';
+    source = replaceOnce(source, errorAnchor,
+      `\tif (error.code === "FS_EDIT_NOT_FOUND") return new FsError(\`${'${error.message}'} - ${RECOVERY_GUIDANCE}\`, error.code, { cause: error });${eol}${errorAnchor}`,
+      '错误恢复函数');
+  }
 
-  const promptAnchor = 'Use the edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_string with new_string; by default old_string must appear exactly once. If old_string appears multiple times, provide a more specific old_string or set replace_all to true. Read the file first (the default fs-observation-policy requires it), unless you just created or edited it in this session.';
+  const legacyPrompt = 'Use the edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_string with new_string; by default old_string must appear exactly once. If old_string appears multiple times, provide a more specific old_string or set replace_all to true. Read the file first (the default fs-observation-policy requires it), unless you just created or edited it in this session.';
+  const promptAnchor = source.includes(legacyPrompt) ? legacyPrompt
+    : 'Read a file before editing it (the default fs-observation-policy requires it), unless you just created or edited it in this session.';
   const promptReplacement = `${promptAnchor} If an edit reports old_string was not found, do not guess from memory: immediately read the current target file, copy the smallest exact current block that contains the intended change, and retry once with that exact old_string.`;
   source = replaceOnce(source, promptAnchor, promptReplacement, '系统提示');
 
-  const descriptionAnchor = 'Literal text to replace. Must match exactly.';
+  const descriptionAnchor = source.includes('Literal text to replace. Must match exactly.')
+    ? 'Literal text to replace. Must match exactly.' : 'Literal text to replace.';
   const descriptionReplacement = 'Literal text to replace. Must match exactly; after an old_string-not-found error, read the current file and copy an exact current block before retrying.';
   source = replaceOnce(source, descriptionAnchor, descriptionReplacement, '参数说明');
 
-  writeFileSync(TOOL_FS_TARGET, source, 'utf8');
-  return true;
+  return source;
 }
 
-function patchFsLocal() {
-  let source = readFileSync(FS_LOCAL_TARGET, 'utf8');
-  if (source.includes(FUZZY_PATCH_MARKER)) return false;
+function patchFsLocal(target) {
+  let source = readFileSync(target, 'utf8');
+  if (source.includes(FUZZY_PATCH_MARKER)) return undefined;
 
   const eol = source.includes('\r\n') ? '\r\n' : '\n';
   const helperAnchor = 'function applyLiteralEdit(content, oldString, newString, replaceAll, displayPath) {';
@@ -125,14 +135,15 @@ function patchFsLocal() {
     + '\t}';
   source = replaceOnce(source, editAnchor, editReplacement, '严格替换失败分支');
 
-  writeFileSync(FS_LOCAL_TARGET, source, 'utf8');
-  return true;
+  return source;
 }
 
-export function patchEditRecovery() {
-  const patchedToolFs = patchToolFs();
-  const patchedFsLocal = patchFsLocal();
-  return patchedToolFs || patchedFsLocal;
+export function patchEditRecovery({ toolFsTarget = TOOL_FS_TARGET, fsLocalTarget = FS_LOCAL_TARGET } = {}) {
+  const patchedToolFs = patchToolFs(toolFsTarget);
+  const patchedFsLocal = patchFsLocal(fsLocalTarget);
+  if (patchedToolFs !== undefined) writeFileSync(toolFsTarget, patchedToolFs, 'utf8');
+  if (patchedFsLocal !== undefined) writeFileSync(fsLocalTarget, patchedFsLocal, 'utf8');
+  return patchedToolFs !== undefined || patchedFsLocal !== undefined;
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replaceAll('\\', '/')}`).href) {

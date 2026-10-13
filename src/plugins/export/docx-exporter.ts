@@ -273,7 +273,9 @@ export function buildMarkdown(
   md += `## 参考文献\n\n`;
   const citedPapers = papers.filter((p) => citationNumbers.has(p.id));
   citedPapers.forEach((paper, idx) => {
-    md += `[${idx + 1}] ${formatReference(paper, options.citationStyle)}\n\n`;
+    const reference = /^canonical-ref-\d+$/.test(paper.id) && paper.title.includes('https://doi.org/')
+      ? paper.title : formatReference(paper, options.citationStyle);
+    md += `[${idx + 1}] ${reference}\n\n`;
   });
 
   return md;

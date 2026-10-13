@@ -8,12 +8,13 @@
  */
 import { spawn } from 'node:child_process';
 import { copyFile, mkdir, readdir, stat } from 'node:fs/promises';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, basename, extname, relative, resolve } from 'node:path';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, basename, dirname, extname, relative, resolve, sep } from 'node:path';
+import { defineTool } from '@deepseek-ai/dsh-tools';
 import { addFeedback, findClaimEvidence, readFeedback, resolveFeedback } from './paper-feedback.js';
 
 const name = 'command-paper';
-const inject = ['commands', 'goals', 'webServer', 'systemPrompt'];
+const inject = ['commands', 'goals', 'webServer', 'systemPrompt', 'tools'];
 
 const PROJECT_DIR = resolve(process.env.DSH_PAPER_PROJECT_DIR || String.raw`__DSH_PAPER_PROJECT_DIR__`);
 const DATA_ROOT = resolve(process.env.PAPER_DATA_ROOT || String.raw`__PAPER_DATA_ROOT__`);
@@ -28,7 +29,7 @@ const BACKGROUND_RUNNER_SCRIPT = join(PROJECT_DIR, 'scripts', 'paper-background-
 const CLEANUP_SCRIPT = join(PROJECT_DIR, 'scripts', 'cleanup-dsh-data.mjs');
 const PANDOC_BIN = process.env.PANDOC_PATH || 'pandoc';
 const SUPPORTED_EXTS = new Set(['.pdf', '.docx', '.txt', '.md']);
-const PAPER_INPUT_HINT = '<研究领域或题目> [--focus <核心贡献>] [--scope <范围边界>] [--method <方法偏好>] [--constraints <数据约束>] [--journal <期刊ID>]';
+const PAPER_INPUT_HINT = '<研究领域或题目> [--focus <核心贡献>] [--scope <范围边界>] [--method <方法偏好>] [--constraints <数据约束>] [--journal <期刊ID>] [--output-dir <项目目录>]';
 const JOURNALS = {
   'automation-in-construction': 'Automation in Construction',
   'advanced-engineering-informatics': 'Advanced Engineering Informatics',
@@ -43,16 +44,30 @@ const JOURNALS = {
   'ieee-transactions-on-automation-science-and-engineering': 'IEEE Transactions on Automation Science and Engineering',
   'expert-systems-with-applications': 'Expert Systems with Applications',
 };
+const JOURNAL_SKILLS = {
+  'automation-in-construction': 'journal-automation-in-construction',
+  'advanced-engineering-informatics': 'journal-advanced-engineering-informatics',
+  'journal-of-computing-in-civil-engineering': 'journal-journal-of-computing-in-civil-engineering',
+  'computer-aided-civil-and-infrastructure-engineering': 'journal-computer-aided-civil-and-infrastructure-engineering',
+  'building-and-environment': 'journal-building-and-environment',
+  'energy-and-buildings': 'journal-energy-and-buildings',
+  'journal-of-building-engineering': 'journal-journal-of-building-engineering',
+  'science-and-technology-for-the-built-environment': 'journal-science-and-technology-for-the-built-environment',
+  'building-services-engineering-research-and-technology': 'journal-building-services-engineering-research-and-technology',
+  'engineering-applications-of-artificial-intelligence': 'journal-engineering-applications-of-artificial-intelligence',
+  'ieee-transactions-on-automation-science-and-engineering': 'journal-ieee-transactions-on-automation-science-and-engineering',
+  'expert-systems-with-applications': 'journal-expert-systems-with-applications',
+};
 const WORKBENCH_STAGE_LABELS = [
   ['project-intake', '研究建档'],
   ['topic-discovery', '联网选题'],
   ['topic-confirmation', '研究问题确认'],
-  ['literature-search', '文献检索'],
-  ['literature-review', '文献精读'],
   ['protocol-design', '冻结研究方案'],
-  ['outline-generation', '论文大纲'],
   ['experiment-execution', '实验运行'],
   ['data-validation', '数据验收'],
+  ['literature-search', '结果导向文献检索'],
+  ['literature-review', '文献精读与证据综合'],
+  ['outline-generation', '论文大纲'],
   ['introduction-writing', '前言与相关工作'],
   ['methods-writing', '方法与实验设置'],
   ['results-writing', '研究结果'],
@@ -65,6 +80,26 @@ const WORKBENCH_STAGE_LABELS = [
   ['export', '导出文件'],
   ['submission-readiness', '投稿清单'],
 ];
+const WORKBENCH_PHASES = [
+  ['direction', '选题确认', ['project-intake', 'topic-discovery', 'topic-confirmation']],
+  ['protocol', '方案与实验', ['protocol-design', 'experiment-execution', 'data-validation']],
+  ['literature', '文献与大纲', ['literature-search', 'literature-review', 'outline-generation']],
+  ['writing', '正文', ['introduction-writing', 'methods-writing', 'results-writing', 'discussion-writing', 'manuscript-completion']],
+  ['gates', '核验门禁', ['citation-verification', 'polishing', 'quality-validation']],
+  ['delivery', '交付', ['formatting', 'export', 'submission-readiness']],
+];
+function groupWorkbenchPhases(stages) {
+  return WORKBENCH_PHASES.map(([id, label, ids]) => {
+    const members = stages.filter((stage) => ids.includes(stage.id));
+    const status = members.some((stage) => stage.status === 'error') ? 'error'
+      : members.some((stage) => stage.status === 'active') ? 'active'
+        : members.length > 0 && members.every((stage) => stage.status === 'complete') ? 'complete'
+          : members.some((stage) => stage.status === 'complete') ? 'active'
+            : 'pending';
+    const current = members.find((stage) => stage.status === 'active' || stage.status === 'error');
+    return { id, label, status, passed: status === 'complete', detail: current?.label || '' };
+  });
+}
 const APPROVAL_STAGES = new Set(['topic-confirmation', 'protocol-design', 'outline-generation', 'submission-readiness']);
 
 function readTargetJournalId() {
@@ -106,15 +141,15 @@ function registerTargetJournalContext(ctx) {
     text: ({ agent }) => {
       const run = agent && readRunState(agent);
       return run?.outputDir
-        ? `本对话绑定的唯一论文项目：${run.outputDir}（项目 ID: ${run.paperProjectId}）。状态由 /paper-workbench 与 /paper-status 读取同一流水线断点。论文操作只在此目录进行；如需继续、校验或导出，使用对应 /paper-* 命令，不得新建平行稿件或独立进度。`
-        : '本对话尚未绑定论文项目。完整论文任务先使用 /paper 建档；接入 CLI 项目使用 /paper-attach。不要在工作台之外自行创建平行论文目录。';
+        ? `本对话只绑定 ${run.outputDir}。未关闭 work-chain.json 前不要另开流水线。查状态或恢复用 continue_paper_workflow，不要另跑 npm run paper。`
+        : '本对话未绑定论文项目。只有用户明确要求写论文时才调用 start_paper_workflow；其他对话不要注入论文流程。';
     },
   });
   ctx.systemPrompt.context({
     name: 'paper:target-journal',
     order: 30,
     text: () => targetJournalId
-      ? `目标期刊：${JOURNALS[targetJournalId]}。需要期刊约束时加载 journal-${targetJournalId} skill，并将其作为选题范围、结构和格式边界；不要向用户复述本上下文。`
+      ? `目标期刊：${JOURNALS[targetJournalId]}。开始期刊相关工作前，必须先调用 /${JOURNAL_SKILLS[targetJournalId]} 加载该期刊 skill，再将其作为选题范围、结构和格式边界；不要只凭本上下文猜测期刊要求，也不要向用户复述本上下文。`
       : '',
   });
 
@@ -408,14 +443,14 @@ async function initializeResearchWorkspace(topic, journalId, agent) {
   const journalName = JOURNALS[journalId] || '通用论文模式';
   const created = [];
   const templates = {
-    'research-brief.md': `# Research Brief\n\n- 宽泛研究领域：${topic}\n- 目标期刊：${journalName}\n- 联网选题与最终研究问题：待确认\n- 假设、预期贡献与不主张边界：待确认\n- 数据、代码、伦理与可复现要求：待确认\n- 完成标准：研究、数据、稿件、科技质量、DOCX 与投稿清单全部通过\n`,
-    'topic-discovery.md': '# Topic Discovery\n\nStatus: BLOCKED - 尚未运行联网检索与研究方向评估。\n',
-    'claim-evidence-matrix.md': '# Claim-Evidence Matrix\n\n| ID | 核心主张 | 证据来源 | 数据/结果位置 | 证据强度 | 冲突或缺口 | 状态 |\n|---|---|---|---|---|---|---|\n| C1 | 待确认 | 待核验 | 待定位 | 未评估 | 待检查 | BLOCKED |\n',
-    'analysis-plan.md': '# Frozen Research Protocol\n\nStatus: BLOCKED - 待文献综合后冻结假设、变量、数据、基线、对照、消融、统计、伦理、失败规则和复现设置。\n',
-    'data-validation.md': '# Data Validation\n\nStatus: BLOCKED - 尚无通过程序获取并验收的实验数据。\n',
-    'submission-checklist.md': `# Submission Checklist\n\n- [ ] 目标期刊范围与最新作者指南已核对：${journalName}\n- [ ] 源稿质量门禁 PASS\n- [ ] 独立科技审查无 critical/major 问题\n- [ ] DOCX 公式、表格、图片和交叉引用检查 PASS\n- [ ] 引用真实性审计 PASS\n- [ ] 作者贡献、利益冲突、数据/代码可用性及 AI 声明完整\n- [ ] Cover letter、Highlights、图表与补充材料齐全\n`,
-    'revision-log.md': '# Revision Log\n\n| Version | Date | Trigger | Changes | Evidence rerun | Quality status |\n|---|---|---|---|---|---|\n',
-    'publication-record.md': `# Publication Record\n\n- 目标期刊：${journalName}\n- 投稿日期：待填写\n- Manuscript ID：待填写\n- 编辑决定：未投稿\n- 审稿轮次：0\n- 接收日期：待填写\n- DOI / 正式链接：待填写\n`,
+    'research-brief.md': `# Research Brief\r\n\r\n- 宽泛研究领域：${topic}\r\n- 目标期刊：${journalName}\r\n- 联网选题与最终研究问题：待确认\r\n- 假设、预期贡献与不主张边界：待确认\r\n- 数据、代码、伦理与可复现要求：待确认\r\n- 完成标准：研究、数据、稿件、科技质量、DOCX 与投稿清单全部通过\r\n`,
+    'topic-discovery.md': '# Topic Discovery\r\n\r\nStatus: BLOCKED - 尚未运行联网检索与研究方向评估。\r\n',
+    'claim-evidence-matrix.md': '# Claim-Evidence Matrix\r\n\r\n| ID | 核心主张 | 证据来源 | 数据/结果位置 | 证据强度 | 冲突或缺口 | 状态 |\r\n|---|---|---|---|---|---|---|\r\n| C1 | 待确认 | 待核验 | 待定位 | 未评估 | 待检查 | BLOCKED |\r\n',
+    'analysis-plan.md': '# Frozen Research Protocol\r\n\r\nStatus: BLOCKED - 待文献综合后冻结假设、变量、数据、基线、对照、消融、统计、伦理、失败规则和复现设置。\r\n',
+    'data-validation.md': '# Data Validation\r\n\r\nStatus: BLOCKED - 尚无通过程序获取并验收的实验数据。\r\n',
+    'submission-checklist.md': `# Submission Checklist\r\n\r\n- [ ] 目标期刊范围与最新作者指南已核对：${journalName}\r\n- [ ] 源稿质量门禁 PASS\r\n- [ ] 独立科技审查无 critical/major 问题\r\n- [ ] DOCX 公式、表格、图片和交叉引用检查 PASS\r\n- [ ] 引用真实性审计 PASS\r\n- [ ] 作者贡献、利益冲突、数据/代码可用性及 AI 声明完整\r\n- [ ] Cover letter、Highlights、图表与补充材料齐全\r\n`,
+    'revision-log.md': '# Revision Log\r\n\r\n| Version | Date | Trigger | Changes | Evidence rerun | Quality status |\r\n|---|---|---|---|---|---|\r\n',
+    'publication-record.md': `# Publication Record\r\n\r\n- 目标期刊：${journalName}\r\n- 投稿日期：待填写\r\n- Manuscript ID：待填写\r\n- 编辑决定：未投稿\r\n- 审稿轮次：0\r\n- 接收日期：待填写\r\n- DOI / 正式链接：待填写\r\n`,
   };
   for (const [file, content] of Object.entries(templates)) {
     if (createFileIfMissing(join(milestoneDir, file), content)) created.push(file);
@@ -456,7 +491,7 @@ function splitArgs(input) {
 function normalizePaperTopic(input) {
   const text = input.replace(/\s+/g, ' ').trim();
   const titleMatch = text.match(/题目[:：]\s*(.*?)(?=\s+(?:目标|范围|要求)[:：]|$)/);
-  const scopeMatch = text.match(/核心创新[^:：]*[:：]\s*([^。.\n]+)/) || text.match(/范围[:：]\s*([^。.\n]+)/);
+  const scopeMatch = text.match(/核心创新[^:：]*[:：]\s*([^。.\r\n]+)/) || text.match(/范围[:：]\s*([^。.\r\n]+)/);
   const title = (titleMatch?.[1] || text).trim();
   const scope = scopeMatch?.[1]?.trim();
   if (!scope || title.includes(scope)) return title;
@@ -497,6 +532,37 @@ function outputDirFromRunLog(agent) {
   }
 }
 
+function readWorkChain(outputDir) {
+  if (!outputDir) return null;
+  try {
+    return JSON.parse(readFileSync(join(outputDir, '.dsh-state', 'work-chain.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function assertPipelineChain(outputDir) {
+  const active = readWorkChain(outputDir)?.active;
+  if (!active || active.status === 'closed' || active.id === 'pipeline') return;
+  // The pipeline asks before writing. A hard stop here leaves no way to answer.
+}
+
+function sessionsOnProject(outputDir) {
+  if (!outputDir || !existsSync(RUNS_DIR)) return [];
+  const root = resolve(outputDir);
+  const rows = [];
+  for (const name of readdirSync(RUNS_DIR)) {
+    if (!name.endsWith('.json') || name.includes('.request.')) continue;
+    try {
+      const run = JSON.parse(readFileSync(join(RUNS_DIR, name), 'utf8'));
+      if (run.outputDir && resolve(run.outputDir) === root) rows.push(`${name.replace(/\.json$/, '')}: ${run.status || 'unknown'} / ${run.stage || '-'}`);
+    } catch {
+      // A malformed run record is reported by its absence from this inventory.
+    }
+  }
+  return rows;
+}
+
 function activeProjectPid(outputDir) {
   if (!outputDir) return undefined;
   try {
@@ -507,7 +573,77 @@ function activeProjectPid(outputDir) {
   }
 }
 
-function validateApprovalStage(outputDir, pipeline, stage) {
+function reconcileRunState(agent) {
+  const run = readRunState(agent);
+  if (!run?.outputDir) return run;
+  const checkpoint = readPipelineState(run.outputDir);
+  if (!checkpoint?.topic) return run;
+  const ownerPid = activeProjectPid(run.outputDir);
+  if (ownerPid) {
+    run.status = 'running';
+    run.pid = ownerPid;
+    run.stage = checkpoint.stage || run.stage;
+  } else if (checkpoint.metadata?.awaitingApproval) {
+    run.status = 'awaiting-confirmation';
+    run.stage = checkpoint.metadata.awaitingApproval;
+    run.pid = undefined;
+  } else if (run.status === 'running' || (run.status === 'awaiting-confirmation' && run.stage !== checkpoint.stage)) {
+    run.status = 'failed';
+    run.stage = checkpoint.stage || run.stage;
+    run.pid = undefined;
+    run.error = `流水线未正常结束，已保留 ${run.stage} 检查点；可从同一阶段恢复。`;
+    run.finishedAt = new Date().toISOString();
+  }
+  saveRunState(agent, run);
+  return run;
+}
+
+function resolveApprovalMode(mode) {
+  return ['auto', 'topic', 'all'].includes(mode) ? mode : 'topic';
+}
+
+function isPathWithin(root, target) {
+  const targetRelative = relative(root, target);
+  return targetRelative !== '' && targetRelative !== '..'
+    && !targetRelative.startsWith(`..${sep}`) && !isAbsolute(targetRelative);
+}
+
+function quoteCommandPath(value) {
+  if (/["%!^`$]/.test(value)) throw new Error('路径含有无法安全传递给实验解释器的字符。');
+  return `"${value}"`;
+}
+
+function resolveExperimentConfiguration(outputDir, scriptPath, resultsFile) {
+  const outputRoot = realpathSync(outputDir);
+  const actualScript = realpathSync(resolve(outputRoot, scriptPath));
+  if (!isPathWithin(outputRoot, actualScript) || !statSync(actualScript).isFile()) {
+    throw new Error('实验脚本必须是论文项目目录内的普通文件。');
+  }
+  const extension = extname(actualScript).toLowerCase();
+  if (!['.mjs', '.js', '.py'].includes(extension)) throw new Error('实验脚本仅支持 .mjs、.js 或 .py。');
+
+  const result = resolve(outputRoot, resultsFile);
+  if (!['.csv', '.tsv', '.json'].includes(extname(result).toLowerCase())) {
+    throw new Error('机器可读实验结果必须使用 CSV、TSV 或 JSON 格式。');
+  }
+  const expectedResultRoot = resolve(outputRoot, 'experiments', 'results');
+  if (!isPathWithin(expectedResultRoot, result)) throw new Error('结果文件必须写入论文项目的 experiments/results 目录。');
+
+  let existingParent = dirname(result);
+  while (!existsSync(existingParent) && existingParent !== outputRoot) existingParent = dirname(existingParent);
+  if (!isPathWithin(outputRoot, realpathSync(existingParent))) throw new Error('结果目录不能通过链接指向论文项目之外。');
+  if (existsSync(result) && !isPathWithin(outputRoot, realpathSync(result))) {
+    throw new Error('结果文件不能通过链接指向论文项目之外。');
+  }
+
+  const interpreter = extension === '.py' ? 'python' : quoteCommandPath(process.execPath);
+  return {
+    command: `${interpreter} ${quoteCommandPath(actualScript)} --results-file ${quoteCommandPath(result)}`,
+    resultsFile: result,
+  };
+}
+
+function validateApprovalStage(outputDir, pipeline, stage, approvalMode = 'all') {
   if (stage === 'topic-confirmation') {
     let discovery;
     try {
@@ -528,6 +664,15 @@ function validateApprovalStage(outputDir, pipeline, stage) {
   }
   if (stage === 'outline-generation') {
     if (!Array.isArray(pipeline.outline?.nodes)) return '缺少论文大纲检查点，不能确认大纲阶段。';
+    const blueprintPath = join(outputDir, 'milestones', 'argument-blueprint.md');
+    if (!existsSync(blueprintPath)) return '缺少论证蓝图 argument-blueprint.md，请重新生成大纲后再确认。';
+    const blueprint = readFileSync(blueprintPath, 'utf8');
+    if (resolveApprovalMode(approvalMode) === 'all') {
+      for (const heading of ['中心回答（作者确认）', '替代解释与适用边界（作者确认）']) {
+        const section = blueprint.split(`## ${heading}`)[1]?.split(/\r?\r\n## /, 1)[0]?.trim() || '';
+        if (!section || /^\[待作者填写/.test(section)) return `请先补全论证蓝图中的“${heading}”，再确认大纲阶段。`;
+      }
+    }
     return '';
   }
   if (stage === 'submission-readiness') {
@@ -536,10 +681,12 @@ function validateApprovalStage(outputDir, pipeline, stage) {
     if (!/READY FOR AUTHOR CONFIRMATION/.test(readFileSync(manifestPath, 'utf8'))) return '投稿清单仍未通过，请先处理阻断项。';
     return '';
   }
+  if (pipeline.metadata?.pendingQuestion?.stage === stage) return '';
   return `当前阶段 ${stage} 不是可确认节点，请使用 /paper-status 查看真实状态。`;
 }
 
-function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resultsFile, outputDir, agent, approvalMode = 'topic', researchDirection = {}, approvedStage = '') {
+function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resultsFile, outputDir, agent, approvalMode = 'topic', researchDirection = {}, approvedStage = '', decision = '') {
+  assertPipelineChain(outputDir);
   const ownerPid = activeProjectPid(outputDir);
   if (ownerPid) throw new Error(`论文项目正在进程 ${ownerPid} 中运行，请等待完成后再恢复。`);
   const tsxCli = join(PROJECT_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs');
@@ -547,7 +694,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
   const statePath = runStatePath(agent);
   const logPath = runLogPath(agent);
   if (!existsSync(RUNS_DIR)) mkdirSync(RUNS_DIR, { recursive: true });
-  if (existsSync(join(outputDir, '.dsh-state', 'paper-pipeline-state.json'))) appendFileSync(logPath, `\n[断点恢复] ${new Date().toISOString()}\n`, 'utf8');
+  if (existsSync(join(outputDir, '.dsh-state', 'paper-pipeline-state.json'))) appendFileSync(logPath, `\r\n[断点恢复] ${new Date().toISOString()}\r\n`, 'utf8');
   else writeFileSync(logPath, '', 'utf8');
 
   const pipelineArgs = [tsxCli, pipeline, topic];
@@ -561,6 +708,7 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
   if (researchDirection.constraints) pipelineArgs.push('--constraints', researchDirection.constraints);
   pipelineArgs.push('--approval-mode', approvalMode);
   if (approvedStage) pipelineArgs.push('--approved-stage', approvedStage);
+  if (decision) pipelineArgs.push('--decision', decision);
   pipelineArgs.push('--output-dir', outputDir);
   pipelineArgs.push('--project-id', activeProjectId(agent));
   const requestPath = join(RUNS_DIR, `${sessionKey(agent)}-${Date.now()}.request.json`);
@@ -606,17 +754,17 @@ function goalStatusText(ctx, invocation) {
   if (!goal) return '对话目标: 未设置';
   if (goal.phase === 'complete') return '对话目标: 已完成';
   if (goal.activation === 'armed') return `对话目标: 正在执行 (${goal.roundsStarted}/${goal.maxGoalRounds})`;
-  return `对话目标: 等待恢复 (${goal.roundsStarted}/${goal.maxGoalRounds})\n提示: 任务列表是持久快照，并不表示模型仍在执行；使用 /paper-resume 恢复。`;
+  return `对话目标: 等待恢复 (${goal.roundsStarted}/${goal.maxGoalRounds})\r\n提示: 任务列表是持久快照，并不表示模型仍在执行；使用 /paper-resume 恢复。`;
 }
 
 function statusText(ctx, invocation) {
-  const state = readRunState(invocation.agent);
+  const state = reconcileRunState(invocation.agent);
   const goalStatus = goalStatusText(ctx, invocation);
-  if (!state) return `${goalStatus}\n后台流水线: 尚未启动`;
+  if (!state) return `${goalStatus}\r\n后台流水线: 尚未启动`;
   const running = state.status === 'running' && processIsRunning(state.pid);
   if (state.status === 'running' && !running) {
     state.status = 'failed';
-    state.error = '后台进程已退出；请重新发送 /paper 启动新的论文任务。';
+    state.error = '后台进程已退出；助手应先检查同一项目的检查点并主动调用 /paper-resume；仅当检查点缺失时，才根据当前对话上下文主动调用 /paper 重建任务。';
     state.finishedAt ||= new Date().toISOString();
     saveRunState(invocation.agent, state);
   }
@@ -632,16 +780,29 @@ function statusText(ctx, invocation) {
   const retryLine = running && state.nextRetryAt ? `下次自动续跑: ${state.nextRetryAt}` : undefined;
   let tail = '';
   try {
-    tail = readFileSync(runLogPath(invocation.agent), 'utf8').trim().split(/\r?\n/).slice(-12).join('\n');
+    tail = readFileSync(runLogPath(invocation.agent), 'utf8').trim().split(/\r?\r\n/).slice(-12).join('\r\n');
   } catch {
     tail = '暂无日志。';
   }
-  return [goalStatus, `后台流水线: ${status}`, retryLine, `选题: ${state.topic}`, `目标期刊: ${state.journalName || '通用论文模式'}`, `当前阶段: ${state.stage}`, `开始时间: ${state.startedAt}`, `日志: ${state.logPath}`, '', '最近进度:', tail || '任务刚刚启动。'].filter(Boolean).join('\n');
+  const chain = readWorkChain(state.outputDir)?.active;
+  const chainLine = chain ? `当前工作链: ${chain.title} / ${chain.status}${chain.note ? `。${chain.note}` : ''}` : '当前工作链: 未登记';
+  let questionLine;
+  try {
+    const pending = readPipelineState(state.outputDir)?.metadata?.pendingQuestion;
+    if (pending?.question && Array.isArray(pending.choices)) {
+      questionLine = ['需要你回答:', pending.question, ...pending.choices.map((choice) => `- ${choice.id}: ${choice.label}`), '用 /paper-confirm <选项> 回答。这不会把稿件标成投稿就绪。'].join('\r\n');
+    }
+  } catch {
+    questionLine = undefined;
+  }
+  const sessions = sessionsOnProject(state.outputDir);
+  const sessionLine = sessions.length ? `绑定同一项目的对话: ${sessions.join('；')}` : undefined;
+  return [goalStatus, chainLine, sessionLine, `后台流水线: ${status}`, retryLine, `选题: ${state.topic}`, `目标期刊: ${state.journalName || '通用论文模式'}`, `当前阶段: ${state.stage}`, questionLine, `开始时间: ${state.startedAt}`, `日志: ${state.logPath}`, '', '最近进度:', tail || '任务刚刚启动。'].filter(Boolean).join('\r\n');
 }
 
 async function workbenchText(ctx, invocation) {
   const snapshot = await workbenchSnapshot(invocation.agent);
-  if (!snapshot.project) return `${statusText(ctx, invocation)}\n论文项目: 尚未建立，请先使用 /paper。`;
+  if (!snapshot.project) return `${statusText(ctx, invocation)}\r\n论文项目: 尚未建立；若当前对话已有完整科研任务，助手应从上下文提炼主题并主动调用 /paper 建档，不要要求用户手动输入命令。`;
   return [
     '科技论文工作台',
     `项目: ${snapshot.topic}`,
@@ -650,7 +811,8 @@ async function workbenchText(ctx, invocation) {
     `目标期刊: ${snapshot.journalName}`,
     statusText(ctx, invocation),
     '',
-    ...snapshot.stages.map((stage, index) => `${index + 1}. ${stage.label}: ${stage.passed ? 'READY' : 'BLOCKED'}`),
+    ...snapshot.phases.map((phase, index) => `${index + 1}. ${phase.label}: ${phase.passed ? 'READY' : phase.status === 'active' ? '进行中' : phase.status === 'error' ? '需处理' : '未开始'}${phase.detail ? `（${phase.detail}）` : ''}`),
+    `当前内部步骤: ${snapshot.stage}`,
     '',
     `输入资料: ${snapshot.inputCount} 个文件`,
     `可交付文件: ${snapshot.deliverableCount} 个`,
@@ -659,19 +821,21 @@ async function workbenchText(ctx, invocation) {
     snapshot.latestReport ? `最新报告: ${snapshot.latestReport}` : '最新报告: 尚未生成',
     '',
     snapshot.runStatus === 'awaiting-confirmation' ? '请先核对当前阶段产物，再使用 /paper-confirm 继续。' : '工作台和 /paper 命令读取同一流水线状态。',
-  ].join('\n');
+  ].join('\r\n');
 }
 
 async function workbenchSnapshot(agent) {
-  const state = readRunState(agent);
+  const state = reconcileRunState(agent);
   const baseDir = state?.outputDir;
   if (!baseDir) {
     return {
       project: false,
       runStatus: 'idle',
       stage: 'project-intake',
-      stages: WORKBENCH_STAGE_LABELS.map(([id, label]) => ({ id, label, passed: false, status: 'pending' })),
-      progress: { completed: 0, total: WORKBENCH_STAGE_LABELS.length, percent: 0 },
+      stageLabel: '研究建档',
+      phases: groupWorkbenchPhases(WORKBENCH_STAGE_LABELS.map(([id, label]) => ({ id, label, passed: false, status: 'pending' }))),
+      stages: groupWorkbenchPhases(WORKBENCH_STAGE_LABELS.map(([id, label]) => ({ id, label, passed: false, status: 'pending' }))),
+      progress: { completed: 0, total: WORKBENCH_PHASES.length, percent: 0 },
       inputCount: 0,
       deliverableCount: 0,
       quality: '未运行',
@@ -710,7 +874,8 @@ async function workbenchSnapshot(agent) {
     if (id === 'quality-validation' && quality === 'PASS' && status === 'pending') status = 'complete';
     return { id, label, passed: status === 'complete', status };
   });
-  const completed = stages.filter((stage) => stage.passed).length;
+  const phases = groupWorkbenchPhases(stages);
+  const completed = phases.filter((phase) => phase.passed).length;
   return {
     project: true,
     topic: workspace?.topic || state.topic,
@@ -721,10 +886,12 @@ async function workbenchSnapshot(agent) {
     paperProjectId: workspace?.paperProjectId || pipeline?.metadata?.paperProjectId || state.paperProjectId || paperProjectId(agent),
     runStatus,
     stage: state.stage || pipelineStage,
+    stageLabel: Object.fromEntries(WORKBENCH_STAGE_LABELS)[pipelineStage] || pipelineStage,
     nextRetryAt: state.nextRetryAt,
     recoveryCount: state.recoveryCount,
-    stages,
-    progress: { completed, total: stages.length, percent: Math.round((completed / stages.length) * 100) },
+    stages: phases,
+    phases,
+    progress: { completed, total: phases.length, percent: Math.round((completed / phases.length) * 100) },
     inputCount: await countDocs(state.inputDir || join(baseDir, 'input')),
     deliverableCount: deliverables.length,
     quality,
@@ -744,7 +911,7 @@ function artifactPassed(path) {
 
 async function submissionText(agent) {
   const baseDir = activePaperDir(agent);
-  if (!baseDir) return 'SUBMISSION BLOCKED\n- 尚未建立本对话的论文项目。';
+  if (!baseDir) return 'SUBMISSION BLOCKED\r\n- 尚未建立本对话的论文项目。';
   const artifacts = await listOutputArtifacts(baseDir);
   const latestMarkdown = artifacts.find((row) => isManuscriptMarkdown(row.file));
   const latestDocx = artifacts.find((row) => row.file.toLowerCase().endsWith('.docx') && !row.file.startsWith('~$'));
@@ -765,15 +932,130 @@ async function submissionText(agent) {
     ['投稿与发表记录', existsSync(join(baseDir, 'milestones', 'publication-record.md')), join(baseDir, 'milestones', 'publication-record.md')],
   ];
   const ready = checks.every(([, passed]) => passed);
-  return [ready ? 'SUBMISSION READY' : 'SUBMISSION BLOCKED', ...checks.map(([label, passed, path]) => `- ${passed ? 'PASS' : 'BLOCKED'} ${label}${path ? `: ${path}` : ''}`), '', ready ? '投稿包已满足平台验收条件，仍需在期刊官网核对当天的易变要求。' : '先修复所有 BLOCKED 项，不得把生成文件等同于投稿完成。'].join('\n');
+  return [ready ? 'SUBMISSION READY' : 'SUBMISSION BLOCKED', ...checks.map(([label, passed, path]) => `- ${passed ? 'PASS' : 'BLOCKED'} ${label}${path ? `: ${path}` : ''}`), '', ready ? '投稿包已满足平台验收条件，仍需在期刊官网核对当天的易变要求。' : '先修复所有 BLOCKED 项，不得把生成文件等同于投稿完成。'].join('\r\n');
+}
+
+async function confirmPaperStage(ctx, agent, decision = '') {
+  const run = readRunState(agent);
+  if (!run?.outputDir) return { kind: 'error', text: '本对话尚未启动论文流程。' };
+  if (run.status !== 'awaiting-confirmation') {
+    return { kind: 'error', text: '当前没有等待确认的论文阶段，请检查真实状态。' };
+  }
+  if (activeProjectPid(run.outputDir)) return { kind: 'error', text: '论文项目仍在运行，请等待完成后再确认。' };
+  const pipeline = readPipelineState(run.outputDir);
+  if (!pipeline?.topic) return { kind: 'error', text: '没有找到论文流水线检查点，无法确认。' };
+  const pending = pipeline.metadata?.pendingQuestion;
+  if (pending?.question) {
+    const choice = pending.choices?.find((item) => item.id === decision);
+    if (!choice) {
+      return { kind: 'error', text: [pending.question, ...(pending.choices || []).map((item) => `- ${item.id}: ${item.label}`), '', '请用 /paper-confirm <选项> 回答。直接确认不会跳过，也不会把稿件标成投稿就绪。'].join('\r\n') };
+    }
+    startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, run.outputDir, agent, resolveApprovalMode(run.approvalMode), run.researchDirection, '', decision);
+    return { kind: 'success', text: [`已收到选择: ${choice.label}`, `当前研究问题: ${pipeline.topic}`, `论文目录: ${run.outputDir}`, '', '流水线从同一检查点继续。已有标记仍保留，这次确认不是投稿通过。'].join('\r\n') };
+  }
+  const approvalStage = pipeline.metadata?.awaitingApproval || run.stage;
+  const label = Object.fromEntries(WORKBENCH_STAGE_LABELS)[approvalStage] || approvalStage;
+  const approvalMode = resolveApprovalMode(run.approvalMode);
+  const validationError = validateApprovalStage(run.outputDir, pipeline, approvalStage, approvalMode);
+  if (validationError) return { kind: 'error', text: validationError };
+  startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, run.outputDir, agent, approvalMode, run.researchDirection, approvalStage);
+  return {
+    kind: 'success',
+    text: [`已确认阶段: ${label}`, `当前研究问题: ${pipeline.topic}`, `论文目录: ${run.outputDir}`, '', approvalMode === 'all' ? '同一流水线已从断点继续；下一处关键产物仍会暂停等待你确认。' : '同一流水线已从断点继续；后续阶段按选题确认后的自动执行策略推进，投稿就绪仍保留作者确认。'].join('\r\n'),
+  };
 }
 
 function apply(ctx) {
   registerTargetJournalContext(ctx);
 
+  ctx.tools.register(defineTool({
+    name: 'start_paper_workflow',
+    description: 'Start the unified, session-bound academic paper workflow when the conversation already contains a clear research task. Infer and preserve its topic and constraints from conversation context; do not ask the user to invoke /paper manually.',
+    parameters: {
+      topic: { type: 'string', required: true, description: 'Research topic/title distilled from the conversation.' },
+      focus: { type: 'string', description: 'Core research contribution or question.' },
+      scope: { type: 'string', description: 'Scope and boundaries.' },
+      method: { type: 'string', description: 'Method preference or already established approach.' },
+      constraints: { type: 'string', description: 'Data, evidence, or execution constraints.' },
+      journal: { type: 'string', description: 'Known target journal ID.' },
+      outputDir: { type: 'string', description: 'User-specified project directory, if any; must be inside the configured paper output root.' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    execute: async (args, execution) => {
+      const options = [
+        ['--focus', args.focus], ['--scope', args.scope], ['--method', args.method],
+        ['--constraints', args.constraints], ['--journal', args.journal], ['--output-dir', args.outputDir],
+      ];
+      const quote = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
+      const rawInput = [quote(args.topic), ...options.flatMap(([flag, value]) => value ? [flag, quote(value)] : [])].join(' ');
+      const result = await handlePaperCommand(ctx, { rawInput, agent: execution.agent });
+      return `${result.kind === 'error' ? '启动失败: ' : ''}${result.text}`;
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'continue_paper_workflow',
+    description: 'Inspect the bound paper workflow, bind a reproducible in-project experiment script, resume a failed/interrupted stage, or confirm a checkpoint only after the user explicitly approved that exact stage. Never start a parallel CLI pipeline.',
+    parameters: {
+      action: { type: 'string', required: true, enum: ['status', 'confirm', 'configure-experiment', 'resume'] },
+      userConfirmed: { type: 'boolean', description: 'Set true only when the user explicitly approved the currently pending checkpoint in this conversation.' },
+      experimentScript: { type: 'string', description: 'Existing .mjs, .js, or .py script inside the bound paper project.' },
+      resultsFile: { type: 'string', description: 'CSV, TSV, or JSON output path inside the project experiments/results directory.' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    execute: async (args, execution) => {
+      const agent = execution.agent;
+      if (!agent) return '无法识别当前会话，未操作论文流水线。';
+      if (args.action === 'status') {
+        reconcileRunState(agent);
+        return statusText(ctx, { agent });
+      }
+      if (args.action === 'confirm') {
+        if (args.userConfirmed !== true) return '当前关卡需要用户明确确认；未启动流水线。';
+        const result = await confirmPaperStage(ctx, agent);
+        return result.text;
+      }
+      const run = reconcileRunState(agent);
+      if (!run?.outputDir) return '本对话尚未绑定论文项目。';
+      const checkpointState = readPipelineState(run.outputDir);
+      const stage = checkpointState?.stage || run.stage;
+      if (args.action === 'configure-experiment') {
+        if (run.status === 'awaiting-confirmation') return '当前阶段正在等待作者确认；不能配置或启动实验。';
+        if (activeProjectPid(run.outputDir)) return `论文流水线仍在运行（${stage}），不能更改实验配置。`;
+        if (stage !== 'experiment-execution') return `当前阶段为 ${stage}，只有到达 experiment-execution 后才能绑定实验程序。`;
+        if (!args.experimentScript || !args.resultsFile) return '绑定实验程序必须同时提供项目内脚本路径和 experiments/results 下的结果文件路径。';
+        const configuration = resolveExperimentConfiguration(run.outputDir, args.experimentScript, args.resultsFile);
+        run.experimentCommand = configuration.command;
+        run.resultsFile = configuration.resultsFile;
+        run.status = 'failed';
+        run.stage = stage;
+        run.error = undefined;
+        saveRunState(agent, run);
+        return `已绑定项目内实验脚本：${args.experimentScript}\n结果文件：${configuration.resultsFile}\n尚未启动；先核对研究方案与参数证据，再调用 resume。`;
+      }
+      if (run.status === 'awaiting-confirmation') return '流水线正在等待用户确认当前关卡；不得自动跳过。';
+      if (activeProjectPid(run.outputDir)) return `论文流水线仍在运行（${run.stage}），无需重复启动。`;
+      if (run.status === 'completed') return '论文流水线已完成，无需恢复。';
+      const checkpoint = join(run.outputDir, '.dsh-state', 'paper-pipeline-state.json');
+      if (!existsSync(checkpoint)) return '检查点缺失，未启动恢复。';
+      if (stage === 'experiment-execution' && (!run.experimentCommand || !run.resultsFile)) {
+        return '实验阶段尚无可复现程序或结果路径，未重复启动失败任务。助手应检查方案与现有数据；有充分证据时在项目内编写程序并调用 configure-experiment，证据不足时记录具体阻断项，不能要求用户手动输入 CLI 命令或虚构结果。';
+      }
+      const approvalMode = resolveApprovalMode(run.approvalMode);
+      startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, run.outputDir, agent, approvalMode, run.researchDirection);
+      return `已从同一项目的 ${stage} 检查点恢复，沿用 ${approvalMode} 审批策略：${run.outputDir}`;
+    },
+  }));
+
   ctx.commands.register({
     name: 'paper',
-    description: '从联网选题、研究设计、实验运行到写作、校验和投稿的一站式流水线',
+    description: '从联网选题、研究设计、实验运行到写作、校验和投稿的一站式流水线；助手应从对话上下文提炼主题并自主启动，不要求用户手动输入命令',
     input: {
       hint: PAPER_INPUT_HINT,
       images: false,
@@ -801,7 +1083,7 @@ function apply(ctx) {
         return { kind: 'error', text: `一个对话只对应一篇论文。本对话已绑定“${existing.topic}”，请新建对话后再建立新论文。` };
       }
       const result = await initializeResearchWorkspace(topic, journalId, invocation.agent);
-      return { kind: 'success', text: [`论文项目已建立: ${topic}`, `目标期刊: ${result.journalName}`, `新建台账: ${result.created.length ? result.created.join(', ') : '已有文件均已保留，未覆盖'}`, `本对话论文目录: ${result.outputDir}`, '', '下一步先完善 research-brief.md 与 analysis-plan.md，再进入证据综合和逐段写作。'].join('\n') };
+      return { kind: 'success', text: [`论文项目已建立: ${topic}`, `目标期刊: ${result.journalName}`, `新建台账: ${result.created.length ? result.created.join(', ') : '已有文件均已保留，未覆盖'}`, `本对话论文目录: ${result.outputDir}`, '', '下一步先完善 research-brief.md 与 analysis-plan.md，再进入证据综合和逐段写作。'].join('\r\n') };
     },
   });
 
@@ -838,23 +1120,8 @@ function apply(ctx) {
   ctx.commands.register({
     name: 'paper-confirm',
     description: '确认当前暂停的论文阶段，并从同一断点继续运行',
-    input: { hint: '[无参数]', images: false },
-    handler: async (invocation) => {
-      const run = readRunState(invocation.agent);
-      if (!run?.outputDir) return { kind: 'error', text: '本对话尚未启动论文流程。' };
-      if (run.status !== 'awaiting-confirmation') {
-        return { kind: 'error', text: '当前没有等待确认的论文阶段，请使用 /paper-status 查看真实状态。' };
-      }
-      if (activeProjectPid(run.outputDir)) return { kind: 'error', text: '论文项目仍在运行，请等待完成后再确认。' };
-      const pipeline = readPipelineState(run.outputDir);
-      if (!pipeline?.topic) return { kind: 'error', text: '没有找到论文流水线检查点，无法确认。' };
-      const approvalStage = pipeline.metadata?.awaitingApproval || run.stage;
-      const label = Object.fromEntries(WORKBENCH_STAGE_LABELS)[approvalStage] || approvalStage;
-      const validationError = validateApprovalStage(run.outputDir, pipeline, approvalStage);
-      if (validationError) return { kind: 'error', text: validationError };
-      startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, run.outputDir, invocation.agent, 'all', run.researchDirection, approvalStage);
-      return { kind: 'success', text: [`已确认阶段: ${label}`, `当前研究问题: ${pipeline.topic}`, `论文目录: ${run.outputDir}`, '', '同一流水线已从断点继续；下一处关键产物仍会暂停等待你确认。'].join('\n') };
-    },
+    input: { hint: '[选项]', images: false },
+    handler: async (invocation) => confirmPaperStage(ctx, invocation.agent, invocation.rawInput?.trim() || ''),
   });
 
   ctx.commands.register({
@@ -906,7 +1173,7 @@ function apply(ctx) {
       if (artifacts.length === 0) return { kind: 'success', text: baseDir ? `本对话论文目录暂无里程碑产物: ${baseDir}` : '本对话尚未建立论文项目。' };
       return {
         kind: 'success',
-        text: ['论文产物（按更新时间排序）:', ...artifacts.map((row) => `- ${row.file} (${Math.ceil(row.size / 1024)} KB)\n  ${row.path}`)].join('\n'),
+        text: ['论文产物（按更新时间排序）:', ...artifacts.map((row) => `- ${row.file} (${Math.ceil(row.size / 1024)} KB)\r\n  ${row.path}`)].join('\r\n'),
       };
     },
   });
@@ -921,7 +1188,7 @@ function apply(ctx) {
       try {
         const found = findClaimEvidence(baseDir, invocation.rawInput?.trim());
         return found
-          ? { kind: 'success', text: `矩阵: ${found.path}\n${found.row}\n请沿证据来源和结果位置继续核对原始文件。` }
+          ? { kind: 'success', text: `矩阵: ${found.path}\r\n${found.row}\r\n请沿证据来源和结果位置继续核对原始文件。` }
           : { kind: 'error', text: '未找到该主张 ID；请核对当前论文的 claim-evidence-matrix.md。' };
       } catch (error) {
         return { kind: 'error', text: error.message };
@@ -941,7 +1208,7 @@ function apply(ctx) {
         if (raw === 'list') {
           const items = readFeedback(baseDir);
           return { kind: 'success', text: items.length
-            ? items.map((item) => `${item.status === 'open' ? '待处理' : '已处理'} ${item.id} [${item.stage}] ${item.claimId}: ${item.issue}\n证据: ${item.evidence}${item.resolution ? `\n处理: ${item.resolution}; 复核: ${item.verification}` : ''}`).join('\n\n')
+            ? items.map((item) => `${item.status === 'open' ? '待处理' : '已处理'} ${item.id} [${item.stage}] ${item.claimId}: ${item.issue}\r\n证据: ${item.evidence}${item.resolution ? `\r\n处理: ${item.resolution}; 复核: ${item.verification}` : ''}`).join('\r\n\r\n')
             : '当前论文没有研究者异议。' };
         }
         const [action, ...parts] = raw.split('|').map((part) => part.trim());
@@ -969,11 +1236,11 @@ function apply(ctx) {
       const targets = await resolveValidationTargets(invocation.rawInput?.trim(), invocation.agent);
       if (targets.error) return { kind: 'error', text: targets.error };
       const result = await runValidation(targets.markdown, targets.docx);
-      const header = [`源稿: ${targets.markdown}`, `Word: ${targets.docx || '未找到，已跳过 DOCX 二次检查'}`].join('\n');
+      const header = [`源稿: ${targets.markdown}`, `Word: ${targets.docx || '未找到，已跳过 DOCX 二次检查'}`].join('\r\n');
       if (result.code === 0 || result.code === 2) {
-        return { kind: 'success', text: `${header}\n\n${result.output || (result.code === 0 ? 'PASS' : 'BLOCKED')}` };
+        return { kind: 'success', text: `${header}\r\n\r\n${result.output || (result.code === 0 ? 'PASS' : 'BLOCKED')}` };
       }
-      return { kind: 'error', text: `${header}\n\n校验执行失败:\n${result.output}` };
+      return { kind: 'error', text: `${header}\r\n\r\n校验执行失败:\r\n${result.output}` };
     },
   });
 
@@ -983,7 +1250,7 @@ function apply(ctx) {
     input: { hint: '[无参数]', images: false },
     handler: async () => ({
       kind: 'success',
-      text: ['已内置以下非 MDPI 期刊：', ...Object.entries(JOURNALS).map(([id, title]) => `- ${title}: ${id}`), '', '用法: /paper <选题> --journal <期刊ID>'].join('\n'),
+      text: ['已内置以下非 MDPI 期刊：', ...Object.entries(JOURNALS).map(([id, title]) => `- ${title}: ${id}`), '', '用法: /paper <选题> --journal <期刊ID>'].join('\r\n'),
     }),
   });
 
@@ -1017,16 +1284,20 @@ function apply(ctx) {
         const outputDir = run.outputDir || outputDirFromRunLog(invocation.agent);
         const checkpoint = outputDir && join(outputDir, '.dsh-state', 'paper-pipeline-state.json');
         if (!checkpoint || !existsSync(checkpoint)) {
-          return { kind: 'error', text: '找到中断任务，但没有可用的流水线检查点；请使用 /paper 重新开始。' };
+        return { kind: 'error', text: '找到中断任务但检查点缺失。助手应根据当前对话上下文提炼原研究主题并主动调用 /paper 重建任务，不要要求用户重复任务描述或手动输入命令。' };
         }
-        startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, outputDir, invocation.agent, run.approvalMode || 'all', run.researchDirection);
+        const pipelineState = readPipelineState(outputDir);
+        if (pipelineState?.stage === 'experiment-execution' && (!run.experimentCommand || !run.resultsFile)) {
+          return { kind: 'error', text: '实验阶段缺少可复现程序或结果路径，未重复启动失败任务。助手应检查项目方案与数据；证据充分时在项目 code/ 内编写程序并通过 continue_paper_workflow 的 configure-experiment 动作绑定，证据不足时记录阻断项，不能虚构实验结果。' };
+        }
+        startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, outputDir, invocation.agent, resolveApprovalMode(run.approvalMode), run.researchDirection);
         messages.push(`后台流水线已从检查点恢复：${outputDir}`);
       } else if (pipelineRunning) {
         messages.push('后台流水线正在运行，无需重复恢复。');
       }
 
       if (messages.length === 0) return { kind: 'error', text: '当前没有可恢复的论文任务。' };
-      return { kind: 'success', text: messages.join('\n') };
+      return { kind: 'success', text: messages.join('\r\n') };
     },
   });
 
@@ -1035,7 +1306,7 @@ function apply(ctx) {
       if (!raw) {
         return {
           kind: 'success',
-          text: `用法: /paper ${PAPER_INPUT_HINT}\n流程将在联网选题后暂停一次，确认研究问题后自动完成其余阶段。`,
+          text: `当前调用没有研究主题。若用户已在本对话说明科研任务，请由助手从上下文提炼主题并重新调用，不要要求用户重复输入。用法: /paper ${PAPER_INPUT_HINT}\r\n流程将在联网选题后暂停一次，确认研究问题后自动完成其余阶段。`,
         };
       }
 
@@ -1043,6 +1314,7 @@ function apply(ctx) {
       let topic = '';
       let filePath = '';
       let dirPath = '';
+      let requestedOutputDir = '';
       let journalId = '';
       let experimentCommand = '';
       let resultsFile = '';
@@ -1055,6 +1327,8 @@ function apply(ctx) {
         } else if (parts[i] === '--dir' && parts[i + 1]) {
           dirPath = parts[i + 1];
           i++;
+        } else if (parts[i] === '--output-dir' && parts[i + 1]) {
+          requestedOutputDir = parts[++i];
         } else if (parts[i] === '--journal' && parts[i + 1]) {
           journalId = parts[i + 1].toLowerCase();
           i++;
@@ -1081,7 +1355,7 @@ function apply(ctx) {
       }
       topic = normalizePaperTopic(topic);
       if (journalId && !JOURNALS[journalId]) {
-        return { kind: 'error', text: `未知期刊 ID: ${journalId}\n使用 /journals 查看可用列表。` };
+        return { kind: 'error', text: `未知期刊 ID: ${journalId}\r\n使用 /journals 查看可用列表。` };
       }
 
       try {
@@ -1094,6 +1368,16 @@ function apply(ctx) {
         }
         if (currentRun?.topic && currentRun.topic !== topic) {
           return { kind: 'error', text: `一个对话只对应一篇论文。本对话已绑定“${currentRun.topic}”，请新建对话后再开始新论文。` };
+        }
+
+        if (requestedOutputDir) {
+          requestedOutputDir = resolve(requestedOutputDir);
+          if (!isInsideDir(requestedOutputDir, OUTPUT_DIR)) {
+            return { kind: 'error', text: `项目目录必须位于论文输出根目录内：${OUTPUT_DIR}` };
+          }
+          if (currentRun?.outputDir && resolve(currentRun.outputDir) !== requestedOutputDir) {
+            return { kind: 'error', text: `本对话已绑定项目目录 ${currentRun.outputDir}，不能切换到其他目录。` };
+          }
         }
 
         if (filePath && dirPath) return { kind: 'error', text: '--file 和 --dir 只能选择一个。' };
@@ -1110,7 +1394,7 @@ function apply(ctx) {
             return { kind: 'error', text: `目录不存在: ${dirPath}` };
           }
         }
-        const outputDir = currentRun?.outputDir || createConversationProjectDir(invocation.agent);
+        const outputDir = currentRun?.outputDir || requestedOutputDir || createConversationProjectDir(invocation.agent);
         const useDir = currentRun?.outputDir && currentRun.status !== 'initialized'
           ? currentRun.inputDir
           : await prepareProjectInput(outputDir, filePath, dirPath);
@@ -1134,7 +1418,7 @@ function apply(ctx) {
           '  两轮跨模型专家评审 → 期刊格式 → 导出与投稿包',
           '',
           '联网选题完成后，工作台会等待你确认最终研究问题；确认后自动完成其余阶段。',
-        ].join('\n');
+        ].join('\r\n');
         return {
           kind: 'success',
           text: successText,
@@ -1148,4 +1432,4 @@ function apply(ctx) {
   }
 }
 
-export { apply, inject, name, prepareProjectInput, validateApprovalStage, WORKBENCH_STAGE_LABELS };
+export { apply, inject, name, prepareProjectInput, resolveApprovalMode, resolveExperimentConfiguration, validateApprovalStage, WORKBENCH_STAGE_LABELS };

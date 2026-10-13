@@ -6,12 +6,14 @@
  */
 
 import { getModelClient } from '../../lib/model-client.js';
+import { ACADEMIC_STYLE_INSTRUCTIONS, polishIntegrityIssues } from './academic-style.js';
 
 export interface PolishResult {
   sectionId: string;
   originalTitle: string;
   polishedContent: string;
   changes: string[];
+  integrityIssues?: string[];
 }
 
 /**
@@ -40,6 +42,8 @@ export async function polishSection(
 9. 优先陈述证据支持的核心发现，删除重复的免责声明和道歉式措辞；将模糊的多重“可能”改为明确的适用范围或不确定性来源，不得提高断言强度
 10. 保留影响有效性、解释或适用范围的方法限制，以及负结果、零效应和失败运行；只调整必要限制的表达与位置，不得选择性删改
 
+${ACADEMIC_STYLE_INSTRUCTIONS}
+
 请直接输出润色后的完整文本，不要添加解释或评论。`;
 
   const userPrompt = `论文主题：${paperTopic}
@@ -61,11 +65,16 @@ ${content}
       maxTokens: 4096,
     });
 
+    const candidate = polished.trim();
+    const integrityIssues = polishIntegrityIssues(content, candidate);
+    const accepted = integrityIssues.length === 0;
+    if (!accepted) console.warn(`[润色保护] ${sectionId}: ${integrityIssues.join(', ')}；保留原文`);
     return {
       sectionId,
       originalTitle: title,
-      polishedContent: polished.trim(),
-      changes: ['语言流畅性提升', '学术表达优化'],
+      polishedContent: accepted ? candidate : content,
+      changes: accepted && candidate !== content ? ['已修改表达；实质含义仍须科学审查'] : [],
+      integrityIssues,
     };
   } catch (error) {
     console.warn(`章节 "${title}" 润色失败，保留原文: ${error instanceof Error ? error.message : String(error)}`);
@@ -74,6 +83,7 @@ ${content}
       originalTitle: title,
       polishedContent: content,
       changes: [],
+      integrityIssues: ['polish-request-failed'],
     };
   }
 }

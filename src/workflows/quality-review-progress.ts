@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto';
 import type { PipelineState, Section, ToolResult } from '../types.js';
 import type { CrossReviewRound, ScientificReview } from '../plugins/verification/scientific-quality-reviewer.js';
 import { renderCanonicalMarkdown } from './canonical-draft.js';
+import { manuscriptRevisionReview } from '../plugins/verification/scientific-quality-reviewer.js';
 
 interface RoundProgress { round: number; primary?: ScientificReview; secondary?: ScientificReview; revisionSummary?: string; completed?: boolean }
-interface QualityProgress { sourceHash: string; rounds: RoundProgress[] }
+interface QualityProgress { sourceHash: string; rounds: RoundProgress[]; coverageVersion: number; contextHash?: string }
 type SavedState = PipelineState & { qualityReviewProgress?: QualityProgress };
 interface ReviewServices {
+  contextHash?: string;
   review: (task: 'quality' | 'qualityCrossReview') => Promise<ToolResult<ScientificReview>>;
   revise: (reviews: ScientificReview[], save: (sections: Section[]) => void) => Promise<ToolResult<{ sections: Section[]; summary: string }>>;
   save: () => void;
@@ -21,8 +23,11 @@ function manuscriptHash(state: PipelineState): string {
 /** Checkpoint reviews before paid revisions and continue the same two-round audit. */
 export async function runQualityReviewRounds(state: PipelineState, services: ReviewServices): Promise<CrossReviewRound[]> {
   const saved = state as SavedState;
-  if (saved.qualityReviewProgress?.sourceHash !== manuscriptHash(state)) {
-    saved.qualityReviewProgress = { sourceHash: manuscriptHash(state), rounds: [] };
+  if (saved.qualityReviewProgress?.sourceHash !== manuscriptHash(state)
+    || saved.qualityReviewProgress.coverageVersion !== 3
+    || saved.qualityReviewProgress.contextHash !== services.contextHash) {
+    saved.qualityReviewProgress = { sourceHash: manuscriptHash(state), rounds: [], coverageVersion: 3,
+      contextHash: services.contextHash };
   }
   const progress = saved.qualityReviewProgress!;
   for (let round = 1; round <= 2; round++) {
@@ -37,7 +42,10 @@ export async function runQualityReviewRounds(state: PipelineState, services: Rev
       current[key] = result.data;
       services.save();
     }
-    const revision = await services.revise([current.primary!, current.secondary!], (sections) => {
+    const actionable = [current.primary!, current.secondary!].map(manuscriptRevisionReview);
+    const revision = actionable.every(review => review.findings.length === 0)
+      ? { success: true, data: { sections: state.sections, summary: 'No material manuscript defects; editorial and submission items retained in review reports.' } }
+      : await services.revise(actionable, (sections) => {
       state.sections = sections;
       progress.sourceHash = manuscriptHash(state);
       services.save();

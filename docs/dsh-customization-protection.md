@@ -37,7 +37,7 @@ npm run sync:dsh
 
 ## 安全升级 DSH
 
-默认升级 DSH 兼容版本。当前 `dsh-univer-office` 只声明兼容 DSH `0.1.2-rc.1`，所以默认不会强行升级到 `0.1.5-rc.2`，避免破坏 Word/工作台能力：
+默认升级到当前验证过的最高 DSH 兼容版本，并同步升级 `dsh-univer-office`。DSH `0.2.0-rc.2` 已发布，但当前 `dsh-univer-office` 仍要求 `0.1.7` 兼容线，所以默认不硬升到 0.2，避免破坏 Word/工作台能力：
 
 ```powershell
 npm run update:dsh
@@ -46,21 +46,21 @@ npm run update:dsh
 指定安装某个包版本：
 
 ```powershell
-npm run update:dsh -- @deepseek-ai/dsh@0.1.5-rc.2
+npm run update:dsh -- @deepseek-ai/dsh@0.1.7-rc.2
 ```
 
 需要临时改变默认 DSH 目标版本时：
 
 ```powershell
-$env:DSH_TARGET_VERSION="0.1.2-rc.1"
-$env:DSH_UNIVER_OFFICE_TARGET_VERSION="0.2.14"
+$env:DSH_TARGET_VERSION="0.1.7-rc.2"
+$env:DSH_UNIVER_OFFICE_TARGET_VERSION="0.3.5"
 npm run update:dsh
 ```
 
 安全升级流程会执行：
 
 ```text
-保护当前定制 → npm 更新 → 安装/更新 Figures for Papers → 同步 DSH runtime → 编译检查 → 定制校验
+保护当前定制 → npm 更新 → 安装/更新 Figures for Papers → 同步 DSH runtime → 编译检查 → 刷新保护快照
 ```
 
 如果升级后出现问题，先运行：

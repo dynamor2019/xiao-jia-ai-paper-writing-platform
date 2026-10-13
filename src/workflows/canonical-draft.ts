@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import type { Paper, PipelineState, Section } from '../types.js';
+import { pruneOldBackups } from '../lib/backup-retention.js';
 
 interface SourceRange { id: string; start: number; end: number }
 interface SourceBinding { path: string; sha256: string; template: string; ranges: SourceRange[]; resultSha256?: string }
@@ -155,7 +156,10 @@ export function adoptCanonicalDraft(outputDir: string, state: PipelineState): bo
   const papers = importReferences(source, referenceEvidence(outputDir));
   bindCitations(sections, papers);
   const checkpoint = join(outputDir, '.dsh-state', 'paper-pipeline-state.json');
-  if (existsSync(checkpoint)) copyFileSync(checkpoint, `${checkpoint}.before-canonical-${hash(readFileSync(checkpoint)).slice(0, 16)}.bak`);
+  if (existsSync(checkpoint)) {
+    copyFileSync(checkpoint, `${checkpoint}.before-canonical-${hash(readFileSync(checkpoint)).slice(0, 16)}.bak`);
+    pruneOldBackups(checkpoint);
+  }
   binding(sections)!.path = path;
   binding(sections)!.resultSha256 = audit.resultSha256;
   state.topic = title;
@@ -209,6 +213,7 @@ export function syncCanonicalDraft(sections: Section[]): void {
     }
   }
   copyFileSync(source.path, `${source.path}.before-${source.sha256.slice(0, 16)}.bak`);
+  pruneOldBackups(source.path);
   const temporary = `${source.path}.pipeline.tmp`;
   writeFileSync(temporary, rendered, 'utf8');
   renameSync(temporary, source.path);

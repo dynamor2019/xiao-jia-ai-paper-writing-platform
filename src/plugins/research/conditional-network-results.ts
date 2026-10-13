@@ -38,6 +38,35 @@ export function conditionalNetworkRows(value: RecordValue): RecordValue[] {
   });
 }
 
+/** Recompute scenario oracles from all feasible records, without treating failed outcomes as zero. */
+function regretEvidence(records: RecordValue[], selected: ReadonlySet<unknown>): RecordValue {
+  const optima: Record<string, number | null> = {};
+  for (const row of records) {
+    const scenario = String(row.scenario_id);
+    optima[scenario] ??= null;
+    if (row.model_feasible) {
+      optima[scenario] = Math.min(optima[scenario] ?? Infinity, Number(row.objective));
+    }
+  }
+  const summaries: Record<string, RecordValue> = {};
+  for (const candidate of selected) {
+    const scopes: RecordValue = {};
+    for (const split of ['design', 'held_out']) {
+      const rows = records.filter((row) => row.candidate_id === candidate && row.split === split);
+      const feasible = rows.filter((row) => row.model_feasible);
+      const regrets = feasible.map((row) => Number(row.objective) - Number(optima[String(row.scenario_id)]));
+      const maximum = regrets.length ? Math.max(...regrets) : null;
+      scopes[split] = { cases: rows.length, feasible: feasible.length,
+        failed_or_unresolved: rows.length - feasible.length,
+        max_regret_all_scenarios_kgco2e: rows.length && rows.length === feasible.length ? maximum : null,
+        max_regret_feasible_cases_kgco2e: maximum };
+    }
+    summaries[String(candidate)] = scopes;
+  }
+  return { scenario_best_feasible_objective_kgco2e: optima, selected_candidate_regret_summary: summaries,
+    regret_scope: 'All supplied feasible candidates in the same scenario; design bounds are not held-out guarantees.' };
+}
+
 /** Read every record before constructing bounded writing evidence, not the first bytes of a large file. */
 export function conditionalNetworkEvidence(value: RecordValue): string {
   const rows = conditionalNetworkRows(value);
@@ -60,6 +89,7 @@ export function conditionalNetworkEvidence(value: RecordValue): string {
   const chosenRows = records.filter((row) => selected.has(String(row.candidate_id)))
     .map(({ components: _components, ...row }) => row);
   return JSON.stringify({ artifact_type: ARTIFACT_TYPE, data_origin: ORIGIN,
+    model_id: value.model_id, system_name: value.system_name, source_roles: value.source_roles,
     sourceHashes: value.sourceHashes, codeHashes: value.codeHashes,
     terminal_count: value.terminal_count, source_terminal_total_m3_s: value.source_terminal_total_m3_s,
     assumed_pressure_root_ifc_id: value.assumed_pressure_root_ifc_id,
@@ -75,5 +105,5 @@ export function conditionalNetworkEvidence(value: RecordValue): string {
     record_count: rows.length, scenario_status_counts: statuses,
     selections: Object.fromEntries(Object.entries(selections).map(([name, entry]) =>
       [name, { selected: entry.selected ?? null, objective: entry.objective ?? null }])),
-    selected_candidate_all_scenarios: chosenRows, field_validation: false });
+    selected_candidate_all_scenarios: chosenRows, ...regretEvidence(records, selected), field_validation: false });
 }

@@ -23,9 +23,15 @@ function replaceOnce(source, needle, replacement, label) {
 }
 
 /** Inject an idle-session shortcut that submits a plain "继续" message. */
-export function patchContinueButton() {
-  let source = readFileSync(CLIENT_BUNDLE, 'utf8');
-  if (source.includes(MARKER)) return false;
+export function patchContinueButton(bundlePath = CLIENT_BUNDLE) {
+  let source = readFileSync(bundlePath, 'utf8');
+  if (source.includes(MARKER)) {
+    const guarded = source.replace('const quickContinue = !blank && !running && !disabled',
+      'const quickContinue = !blank && !running && empty && !disabled');
+    if (guarded === source) return false;
+    writeFileSync(bundlePath, guarded, 'utf8');
+    return true;
+  }
   const eol = source.includes('\r\n') ? '\r\n' : '\n';
   const hadLegacyPatch = source.includes(LEGACY_MARKER);
   source = source.replace(`${eol}\t\t\t\t\t\t\t\t\t\tquickContinue,`, '');
@@ -69,7 +75,10 @@ export function patchContinueButton() {
     );
   }
 
-  const accessAnchor = '\t\t\tconst accessSelect = command === void 0 ? null : (0, react_jsx_runtime.jsx)(PermissionSelect, {';
+  const legacyAccessAnchor = '\t\t\tconst accessSelect = command === void 0 ? null : (0, react_jsx_runtime.jsx)(PermissionSelect, {';
+  const accessAnchor = source.includes(legacyAccessAnchor)
+    ? legacyAccessAnchor
+    : '\t\t\tconst primaryStops = running && subagent === null && (empty || blocked !== void 0);';
   const shortcut = [
     '\t\t\tconst submitQuickContinue = () => {',
     '\t\t\t\tif (inputActions === void 0) return;',
@@ -105,15 +114,17 @@ export function patchContinueButton() {
     source = replaceOnce(source, accessAnchor, shortcut, '组件');
   }
 
-  const modesAnchor = 'children: [accessSelect,';
+  const modesAnchor = source.includes('children: [accessSelect,')
+    ? 'children: [accessSelect,'
+    : 'children: [sessionId === void 0 ? null : renderSlot("conversation.input.permission", { locked }),';
   source = replaceOnce(
     source,
     modesAnchor,
-    'children: [quickContinue, accessSelect,',
+    modesAnchor.replace('children: [', 'children: [quickContinue,'),
     '位置',
   );
 
-  writeFileSync(CLIENT_BUNDLE, source, 'utf8');
+  writeFileSync(bundlePath, source, 'utf8');
   return true;
 }
 
