@@ -160,8 +160,8 @@ test('DSH repair resumes a interrupted paragraph without repeating discovery or 
 
 test('formal literature stages follow validated results and precede all manuscript writing', () => {
   const order = ['protocol-design', 'experiment-execution', 'data-validation', 'literature-search',
-    'literature-review', 'outline-generation', 'introduction-writing', 'methods-writing',
-    'results-writing', 'discussion-writing', 'manuscript-completion', 'citation-verification', 'formatting', 'export'] as const;
+    'literature-review', 'outline-generation', 'results-writing', 'methods-writing',
+    'discussion-writing', 'introduction-writing', 'manuscript-completion', 'citation-verification', 'formatting', 'export'] as const;
   assert.equal(PIPELINE_STAGES.length, 20);
   order.forEach((stage, index) => {
     if (index) assert.ok(PIPELINE_STAGES.indexOf(stage) > PIPELINE_STAGES.indexOf(order[index - 1]));

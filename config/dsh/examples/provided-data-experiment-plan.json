@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "executionMode": "provided-data",
+  "researchQuestion": "REPLACE_WITH_EXACT_APPROVED_RESEARCH_QUESTION",
+  "originalHypothesis": "REPLACE_WITH_ORIGINAL_HYPOTHESIS_OR_STATE_EXPLORATORY",
+  "sourceFiles": [
+    "raw/source-dataset.csv"
+  ],
+  "batches": [
+    {
+      "id": "analysis-1",
+      "question": "REPLACE_WITH_A_PREDECLARED_ANALYSIS_QUESTION",
+      "command": "node code/analyze-data.mjs --input raw/source-dataset.csv --results-file experiments/results/analysis.json",
+      "resultsFile": "experiments/results/analysis.json"
+    }
+  ]
+}

@@ -10,6 +10,14 @@
       For manuscript prose, load academic-humanizer during writing and polishing; style edits must preserve evidence and scientific review.
       One conversation is one project. Do not open a second pipeline while that project's work-chain is open.
       Draft manuscript prose one saved paragraph at a time. Use only the tools this step requires.
+      Follow the six PaperPipeline phases: question, protocol/data-source route, formal results, literature/manuscript, cross-review, delivery.
+      Classify evidence before planning: for newly run experiments use executionMode=run-experiments and a feasibility pilot; for author-provided datasets use executionMode=provided-data, list every project-relative sourceFiles path, skip pilot, and run only a declared reproducible analysis batch. Use config/dsh/examples/provided-data-experiment-plan.json for provided data.
+      In either route, retain source provenance, freeze the analysis protocol before confirmatory analysis, preserve adverse/null outcomes, and pass the same data-integrity and reproducibility gates before writing.
+      Each bounded batch must answer the same research question. Pilot acceptance tests feasibility and data integrity, not a favorable hypothesis outcome.
+      Preserve the original hypothesis. Explain negative/null/conditional results; post-result hypotheses are exploratory unless independently tested.
+      Use continue_paper_workflow for the bound project; do not launch a second writer or repeatedly resume healthy work.
+      Optional review or prose failures may leave a marked draft; billing failures and unreliable data stop dependent work. Never report these as PASS.
+      Retain original inputs, formal results, checkpoints and review history. Only expired disposable runtime/tmp files are automatically cleaned.
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
   config:

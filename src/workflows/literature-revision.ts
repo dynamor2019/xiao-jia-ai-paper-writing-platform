@@ -311,7 +311,7 @@ async function supplement(state: LiteratureRevisionState, options: RevisionOptio
 /** Prepare sources and source-bound passages before any targeted body writing. */
 export async function prepareLiteratureRevision(state: LiteratureRevisionState, options: RevisionOptions): Promise<void> {
   const revision = state.literatureRevision;
-  if (!revision || revision.status === 'completed' || revision.prepared) return;
+  if (!revision || revision.status === 'completed' || revision.status === 'marked' || revision.prepared) return;
   if (revision.status === 'blocked') {
     const shortfall = /fewer than 15 directly relevant/i.test(revision.error || '') && (revision.selections?.length || 0) < 15;
     const parseFailure = /Expected ',' or '}'|Unexpected token|JSON/i.test(revision.error || '');

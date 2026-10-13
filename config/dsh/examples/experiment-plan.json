@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "executionMode": "run-experiments",
+  "researchQuestion": "REPLACE_WITH_EXACT_APPROVED_RESEARCH_QUESTION",
+  "originalHypothesis": "REPLACE_WITH_ORIGINAL_FALSIFIABLE_HYPOTHESIS",
+  "pilot": {
+    "command": "node code/experiment.mjs --mode pilot --results-file experiments/results/pilot.json",
+    "resultsFile": "experiments/results/pilot.json"
+  },
+  "batches": [
+    {
+      "id": "formal-1",
+      "question": "REPLACE_WITH_SPECIFIC_TEST_OF_THE_APPROVED_QUESTION",
+      "command": "node code/experiment.mjs --mode formal --results-file experiments/results/formal.json",
+      "resultsFile": "experiments/results/formal.json"
+    }
+  ]
+}

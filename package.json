@@ -6,7 +6,8 @@
   "main": "electron/main.cjs",
   "scripts": {
     "build": "tsc",
-    "test:startup": "node --test scripts/startup-patches.test.mjs scripts/shared-runtime-guard.test.mjs scripts/patch-dsh-workbench-events.test.mjs scripts/publication-guards.test.mjs",
+    "test:pipeline": "tsx --test src/workflows/phase-progress.test.ts src/workflows/phase-runner.test.ts src/workflows/result-interpretation.test.ts src/workflows/artifact-inventory.test.ts src/workflows/experiment-plan.test.ts src/workflows/delivery-gates.test.ts src/workflows/planned-experiment-integration.test.ts scripts/paper-workbench-state.test.mjs",
+    "test:startup": "node --test scripts/startup-patches.test.mjs scripts/shared-runtime-guard.test.mjs scripts/patch-dsh-workbench-events.test.mjs scripts/publication-guards.test.mjs scripts/paper-phases-ui.test.mjs",
     "setup": "node scripts/setup-dsh.mjs",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
@@ -32,7 +33,7 @@
     "paper:cli": "node scripts/paper-cli.mjs",
     "paper:validate": "tsx src/workflows/validate-paper.ts",
     "model:health": "npm run build --silent && node scripts/model-health-check.mjs",
-    "test": "tsx --test src/plugins/writing/academic-style.test.ts src/plugins/writing/section-writer.test.ts src/workflows/canonical-draft.test.ts src/workflows/polish-checkpoint.test.ts src/workflows/quality-review-progress.test.ts src/plugins/verification/scientific-quality-reviewer.test.ts src/plugins/verification/citation-verifier.test.ts src/plugins/verification/paper-quality-validator.test.ts src/plugins/research/research-lifecycle.test.ts src/plugins/research/topic-evaluation.test.ts src/lib/model-client.test.ts scripts/paper-integration.test.mjs src/plugins/verification/review-consistency.test.ts src/workflows/scientific-review-gate.test.ts src/workflows/nonblocking-review.test.ts src/workflows/final-review-feedback.test.ts src/plugins/export/docx-exporter.test.ts src/workflows/delivery-review-evidence.test.ts src/workflows/submission-wait.test.ts src/workflows/literature-completeness.test.ts src/workflows/literature-revision.test.ts src/workflows/pending-question.test.ts"
+    "test": "tsx --test src/plugins/writing/academic-style.test.ts src/plugins/writing/section-writer.test.ts src/workflows/canonical-draft.test.ts src/workflows/polish-checkpoint.test.ts src/workflows/quality-review-progress.test.ts src/plugins/verification/scientific-quality-reviewer.test.ts src/plugins/verification/citation-verifier.test.ts src/plugins/verification/paper-quality-validator.test.ts src/plugins/research/research-lifecycle.test.ts src/plugins/research/topic-evaluation.test.ts src/lib/model-client.test.ts scripts/paper-integration.test.mjs src/plugins/verification/review-consistency.test.ts src/workflows/scientific-review-gate.test.ts src/workflows/nonblocking-review.test.ts src/workflows/final-review-feedback.test.ts src/plugins/export/docx-exporter.test.ts src/workflows/delivery-review-evidence.test.ts src/workflows/submission-wait.test.ts src/workflows/literature-completeness.test.ts src/workflows/literature-revision.test.ts src/workflows/pending-question.test.ts src/workflows/manuscript-authors.test.ts"
   },
   "keywords": [
     "dsh",

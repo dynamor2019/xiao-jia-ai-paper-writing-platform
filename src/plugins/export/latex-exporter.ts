@@ -12,6 +12,7 @@ import type { Paper, Section, ToolResult } from '../../types.js';
 export interface LatexExportOptions {
   title: string;
   authors?: string[];
+  authorBlock?: string;
   abstract?: string;
   keywords?: string[];
   template?: 'article' | 'ieee' | 'ctex';
@@ -85,6 +86,7 @@ function buildLatex(
 
   tex += `\\begin{document}\n\n`;
   tex += `\\maketitle\n\n`;
+  if (options.authorBlock) tex += `${escapeLatex(options.authorBlock)}\n\n`;
 
   // 摘要
   if (options.abstract) {

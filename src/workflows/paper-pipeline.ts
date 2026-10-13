@@ -1,5 +1,5 @@
 /**
- * 科技论文研究生命周期（20阶段）
+ * 科技论文研究生命周期（六个主流程，保留20个兼容子任务）
  *
  * 阶段流程：
  * 选题与方案 → 实验与结果验收 → 正式文献检索与精读 → 大纲与正文
@@ -19,6 +19,12 @@ import { join, extname, basename, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { createInitialState } from '../config/dsh.config.js';
+import { PAPER_PHASES, paperStages, phaseForStage } from '../../config/dsh/web/paper-phases.js';
+import { beginTask, finishTask, canDegradeTask, assertRecoverableContentFailure, resolveTaskMarkers, type ProgressState } from './phase-progress.js';
+import { resultInterpretationInstructions } from './result-interpretation.js';
+import { maintainPipelineArtifacts } from './artifact-inventory.js';
+import { runExperimentPlan, type ExperimentPlan, type ExperimentPlanOptions, type ExperimentPlanCheckpoint } from './experiment-plan.js';
+import { deliveryGateStatuses } from './delivery-gates.js';
 import { pruneOldBackups } from '../lib/backup-retention.js';
 import { polishWithCheckpoints } from './polish-checkpoint.js';
 import { runQualityReviewRounds } from './quality-review-progress.js';
@@ -52,6 +58,7 @@ import { exportToDocx } from '../plugins/export/docx-exporter.js';
 import { exportToLatex } from '../plugins/export/latex-exporter.js';
 import { readFeedback } from '../../config/dsh/web/paper-feedback.js';
 import { adoptCanonicalDraft, canonicalScope, renderCanonicalMarkdown, syncCanonicalDraft } from './canonical-draft.js';
+import { renderAuthorBlock } from '../../config/dsh/web/manuscript-authors.mjs';
 import { reviewWithAdjudication } from './scientific-review-gate.js';
 import { deliveryReviewEvidence } from './delivery-review-evidence.js';
 import { auditLiteratureCompleteness, formatLiteratureCompleteness } from './literature-completeness.js';
@@ -125,30 +132,12 @@ export function renderArgumentBlueprint(topic: string, outline: Outline, previou
 }
 
 type ApprovalMode = 'auto' | 'topic' | 'all';
-export const PIPELINE_STAGES: PipelineStage[] = [
-  'project-intake',
-  'topic-discovery',
-  'topic-confirmation',
-  'protocol-design',
-  'experiment-execution',
-  'data-validation',
-  'literature-search',
-  'literature-review',
-  'outline-generation',
-  'introduction-writing',
-  'methods-writing',
-  'results-writing',
-  'discussion-writing',
-  'manuscript-completion',
-  'citation-verification',
-  'polishing',
-  'quality-validation',
-  'formatting',
-  'export',
-  'submission-readiness',
-];
+export const PIPELINE_STAGES = paperStages() as PipelineStage[];
 
 interface PipelineOptions {
+  repairStage?: PipelineStage;
+  billingRestored?: boolean;
+  experimentResolution?: ExperimentPlanOptions['authorResolution'];
   inputDir?: string;
   journalId?: string;
   experimentCommand?: string;
@@ -204,10 +193,16 @@ export class PaperPipeline {
   private finalDir: string;
   private extractedTextDir: string;
   private decision?: string;
+  private experimentResolution?: ExperimentPlanOptions['authorResolution'];
+  private billingRestored = false;
+  private repairStage?: PipelineStage;
 
   constructor(topic?: string, onApproval?: (stage: PipelineStage, state: PipelineState) => Promise<boolean>, options: PipelineOptions = {}) {
     this.onApproval = onApproval;
     this.decision = options.decision;
+    this.experimentResolution = options.experimentResolution;
+    this.billingRestored = options.billingRestored === true;
+    this.repairStage = options.repairStage;
     this.inputDir = options.inputDir;
     this.outputDir = normalizeOutputDir(options.outputDir || process.env.PAPER_OUTPUT_DIR || createPaperOutputDir(topic || 'paper', options.paperProjectId));
     this.stateDir = join(this.outputDir, '.dsh-state');
@@ -255,7 +250,7 @@ export class PaperPipeline {
 
   private researchInstructions(): string {
     const sourceScope = canonicalScope(this.outputDir, this.state.sections);
-    if (sourceScope) return [formatJournalInstructions(this.journalProfile), sourceScope, researchInputInstructions(this.outputDir)].filter(Boolean).join('\n\n');
+    if (sourceScope) return [formatJournalInstructions(this.journalProfile), sourceScope, researchInputInstructions(this.outputDir), resultInterpretationInstructions(this.outputDir, this.state.metadata.resultsFile)].filter(Boolean).join('\n\n');
     const direction = this.state.metadata.researchDirection;
     const controls = [
       direction?.focus && `Core focus and contribution: ${direction.focus}`,
@@ -268,6 +263,7 @@ export class PaperPipeline {
       controls.length > 0 ? `Research direction controls:\n${controls.join('\n')}` : '',
       this.topicBoundaryInstructions(),
       researchInputInstructions(this.outputDir),
+      resultInterpretationInstructions(this.outputDir, this.state.metadata.resultsFile),
       integratedProtocol(this.state) && readFileSync(integratedProtocol(this.state)!, 'utf8'),
     ].filter(Boolean).join('\n\n');
   }
@@ -428,6 +424,14 @@ export class PaperPipeline {
   async run(): Promise<PipelineState> {
     const releaseLock = this.acquireProjectLock();
     try {
+      if (this.repairStage) {
+        if (!['citation-verification', 'polishing', 'quality-validation', 'formatting'].includes(this.repairStage)
+          || !this.state.sections.length) throw new Error('Only an existing manuscript gate may be repaired');
+        this.state.stage = this.repairStage;
+        delete this.state.metadata.awaitingApproval;
+        this.repairStage = undefined;
+        this.saveState();
+      }
       if (this.decision) {
         if (!acceptPendingDecision(this.state, this.decision)) console.log(`[询问] 不能使用 ${this.decision}。请从当前问题的选项里选择。`);
         this.decision = undefined;
@@ -440,7 +444,7 @@ export class PaperPipeline {
         this.state.stage = 'literature-search';
         console.log('[DSH phase correction] Incomplete literature revision resumes at literature search, not at a later delivery stage.');
       }
-      if (PIPELINE_STAGES.indexOf(this.state.stage) >= PIPELINE_STAGES.indexOf('introduction-writing')) {
+      if (PIPELINE_STAGES.indexOf(this.state.stage) >= PIPELINE_STAGES.indexOf('results-writing')) {
         assertPrimaryExperimentScope(this.outputDir, this.state.metadata.resultsFile);
       }
       if (adoptCanonicalDraft(this.outputDir, this.state)) {
@@ -464,6 +468,7 @@ export class PaperPipeline {
 
     // 从当前阶段开始
     const startIndex = stages.indexOf(this.state.stage);
+    if (startIndex < 0) throw new Error(`Invalid workflow checkpoint stage: ${this.state.stage}`);
 
     for (let i = startIndex; i < stages.length; i++) {
       const stage = stages[i];
@@ -472,6 +477,8 @@ export class PaperPipeline {
 
       console.log(`\n${'='.repeat(60)}`);
       console.log(`[阶段 ${i + 1}/${stages.length}] ${stage}`);
+      const phase = phaseForStage(stage)!;
+      console.log(`[主流程 ${PAPER_PHASES.indexOf(phase) + 1}/6] ${phase[1]}`);
       console.log(`${'='.repeat(60)}`);
 
       if (this.state.metadata.awaitingApproval === stage && this.state.metadata.pendingQuestion?.stage === stage) {
@@ -489,17 +496,24 @@ export class PaperPipeline {
           this.saveState();
           return this.state;
         }
+        if (stage === 'protocol-design') await this.runPlannedExperiments('pilot');
         delete this.state.metadata.awaitingApproval;
+        finishTask(this.state, stage, 'complete');
+        if (stage !== 'submission-readiness' && stages[i + 1]) this.state.stage = stages[i + 1];
         this.saveState();
         console.log(`[确认通过] ${stage}`);
         if (stage !== 'submission-readiness') continue;
       }
 
       try {
+        beginTask(this.state, stage, this.billingRestored);
+        this.billingRestored = false;
         this.saveState();
         await this.executeStage(stage);
         this.saveState();
         if (this.state.stage !== stage) {
+          finishTask(this.state, stage, 'waiting', `Handed off to ${this.state.stage}`);
+          this.saveState();
           const nextIndex = stages.indexOf(this.state.stage);
           if (nextIndex < 0) throw new Error('Invalid workflow phase transition');
           console.log(`[阶段转交] ${stage} -> ${this.state.stage}；不在核验阶段执行检索或写作。`);
@@ -507,23 +521,42 @@ export class PaperPipeline {
           continue;
         }
         if (this.state.metadata.awaitingApproval === stage) {
+          finishTask(this.state, stage, 'waiting');
+          this.saveState();
           console.log(`[等待作者输入] ${stage}；已完成的稿件交付保持有效。`);
           return this.state;
         }
         console.log(`[完成] ${stage}`);
+        if ((this.state as ProgressState).metadata.workflow?.tasks[stage]?.status !== 'degraded') {
+          finishTask(this.state, stage, 'complete');
+          resolveTaskMarkers(this.state, stage);
+        }
         if (APPROVAL_STAGES.includes(stage) && this.onApproval) {
           const approved = await this.onApproval(stage, this.state);
           if (!approved) {
             this.state.metadata.awaitingApproval = stage;
+            finishTask(this.state, stage, 'waiting');
             console.log(`[等待确认] ${stage}`);
             this.saveState();
             return this.state;
           }
           delete this.state.metadata.awaitingApproval;
         }
+        if (stages[i + 1]) this.state.stage = stages[i + 1];
+        this.saveState();
+        if (phaseForStage(stages[i + 1])?.[0] !== phase[0]) await this.cleanupRuntimeFiles();
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const degraded = canDegradeTask(stage, error);
+        finishTask(this.state, stage, degraded ? 'degraded' : 'failed', message);
         console.error(`[失败] ${stage}:`, error);
         this.saveState();
+        if (degraded) {
+          await this.recordDraftMarker(`[${stage}] Unvalidated draft fallback: ${message}`);
+          if (stages[i + 1]) this.state.stage = stages[i + 1];
+          this.saveState();
+          continue;
+        }
         throw error;
       }
     }
@@ -701,10 +734,11 @@ export class PaperPipeline {
           preparing = false;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const outcome = this.askPending('literature-revision', `${message}。不合格内容没有写入。`, [
+          assertRecoverableContentFailure(message);
+          const outcome = this.state.metadata.pendingQuestion?.id === 'literature-revision' ? this.askPending('literature-revision', `${message}。不合格内容没有写入。`, [
             { id: 'continue-marked', label: '保留标记，继续后面的步骤' },
             { id: 'retry', label: '再试一次这一步' },
-          ]);
+          ]) : 'continue-marked';
           if (outcome === 'retry') continue;
           if (outcome !== 'continue-marked') return;
           revision.markers = [...new Set([...(revision.markers || []), message])];
@@ -815,11 +849,18 @@ export class PaperPipeline {
 
   // ===== 研究方案冻结 =====
   private async stageProtocolDesign(): Promise<void> {
+    const protocol = integratedProtocol(this.state) || join(this.milestoneDir, 'analysis-plan.md');
+    if (existsSync(protocol)) {
+      console.log(`保留已冻结方案: ${protocol}`);
+      await this.runPlannedExperiments('pilot');
+      return;
+    }
     const route = getRoute('protocol');
     console.log(`正在设计可执行实验方案... [模型] ${route.provider.toUpperCase()} / ${route.model}`);
     const result = await createResearchProtocol(this.state.topic, this.state.papers, this.state.notes, this.researchInstructions(), this.milestoneDir);
     if (!result.success || !result.data) throw new Error(result.error || '实验设计没有返回结果');
     console.log(`冻结方案: ${result.data}`);
+    await this.runPlannedExperiments('pilot');
   }
 
   // ===== 阶段 4: 大纲生成 =====
@@ -863,10 +904,11 @@ export class PaperPipeline {
             literaturePending = false;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            const outcome = this.askPending('literature-revision', `${message}。不合格段落没有写入。`, [
+            assertRecoverableContentFailure(message);
+            const outcome = this.state.metadata.pendingQuestion?.id === 'literature-revision' ? this.askPending('literature-revision', `${message}。不合格段落没有写入。`, [
               { id: 'continue-marked', label: '保留标记，继续后面的写作' },
               { id: 'retry', label: '再试一次这一步' },
-            ]);
+            ]) : 'continue-marked';
             if (outcome === 'retry') continue;
             if (outcome !== 'continue-marked') return;
             await this.recordDraftMarker(`文献补写未完成，正文未插入不合格段落：${message}`);
@@ -942,11 +984,13 @@ export class PaperPipeline {
         });
 
         if (!result.success || !result.data) {
+          assertRecoverableContentFailure(result.error || 'No body prose returned');
           this.saveState();
-          const outcome = this.askPending(`paragraph:${node.id}:${paragraphIndex}`, `${node.title} 第 ${paragraphIndex}/${total} 段没有写成：${result.error || '没有返回正文'}。已保存的段落保持不变，失败说明不会写进正文。`, [
+          const questionId = `paragraph:${node.id}:${paragraphIndex}`;
+          const outcome = this.state.metadata.pendingQuestion?.id === questionId ? this.askPending(questionId, `${node.title} 第 ${paragraphIndex}/${total} 段没有写成：${result.error || '没有返回正文'}。已保存的段落保持不变，失败说明不会写进正文。`, [
             { id: 'skip-marked', label: '跳过这一段，留下标记，继续写下一段' },
             { id: 'retry', label: '停在这里，处理后再试这一段' },
-          ]);
+          ]) : 'skip-marked';
           if (outcome === 'retry') {
             paragraphIndex -= 1;
             continue;
@@ -985,6 +1029,7 @@ export class PaperPipeline {
   }
 
   private async loadValidatedResultEvidence(): Promise<string> {
+    assertPrimaryExperimentScope(this.outputDir, this.state.metadata.resultsFile);
     const resultsFile = this.state.metadata.resultsFile;
     if (!resultsFile || !existsSync(resolve(resultsFile))) throw new Error('缺少实验结果，禁止开始论文行文');
     const validationPath = join(this.milestoneDir, 'data-validation.json');
@@ -1025,9 +1070,43 @@ export class PaperPipeline {
 
   // ===== 实验执行与数据验收 =====
   private async stageExperimentExecution(): Promise<void> {
+    if (await this.runPlannedExperiments('formal')) return;
     const result = await runExperiment(this.state.metadata.experimentCommand || '', this.logsDir, this.state.metadata.resultsFile);
     if (!result.success || !result.data) throw new Error(result.error || '实验程序未成功完成');
     console.log(`实验日志: ${result.data}`);
+  }
+
+  /** Execute a project-owned pilot/batch plan without inventing commands or rerunning accepted work. */
+  private async runPlannedExperiments(phase: 'pilot' | 'formal'): Promise<boolean> {
+    const planFile = join(this.milestoneDir, 'experiment-plan.json');
+    if (!existsSync(planFile)) return false;
+    const plan = JSON.parse(await readFile(planFile, 'utf8')) as ExperimentPlan;
+    if (phase === 'pilot' && plan.executionMode === 'provided-data') {
+      console.log(`[已有数据] 已绑定 ${plan.sourceFiles?.length || 0} 个源文件并记录哈希；跳过实验 pilot，后续执行预先说明的分析批次。`);
+    }
+    const resolution = this.experimentResolution;
+    const applicable = resolution && (phase === 'pilot' ? resolution.taskId === 'pilot' : resolution.taskId !== 'pilot');
+    const paths = await runExperimentPlan({
+      projectDir: this.outputDir, phase, planFile: 'milestones/experiment-plan.json',
+      protocolFile: integratedProtocol(this.state) || 'milestones/analysis-plan.md',
+      expectedResearchQuestion: this.loadSelectedTopic()?.researchQuestion,
+      resultsFile: this.state.metadata.resultsFile,
+      timeoutMs: Number(process.env.EXPERIMENT_TIMEOUT_MS || 300_000),
+      authorResolution: applicable ? resolution : undefined,
+      run: (command, outputDir, resultsFile, budget) => runExperiment(command, outputDir, resultsFile, budget),
+      validate: ({ resultsFile, outputDir }) => validateExperimentResults(resultsFile, outputDir),
+    });
+    if (applicable) this.experimentResolution = undefined;
+    if (phase === 'formal' && paths.length) {
+      this.state.metadata.resultsFile = paths.at(-1);
+      const checkpoint = JSON.parse(await readFile(join(this.stateDir, 'experiment-plan-state.json'), 'utf8')) as ExperimentPlanCheckpoint;
+      const task = checkpoint.tasks[plan.batches.at(-1)!.id];
+      if (!task?.logFile) throw new Error('Formal batch has no accepted execution log');
+      await mkdir(this.logsDir, { recursive: true });
+      await copyFile(task.logFile, join(this.logsDir, 'experiment-run.log'));
+    }
+    this.saveState();
+    return true;
   }
 
   private async stageDataValidation(): Promise<void> {
@@ -1093,9 +1172,13 @@ export class PaperPipeline {
 
   /** Keep a visible delivery mark without freezing the draft. */
   private async recordDraftMarker(message: string): Promise<void> {
+    if (!message.startsWith('[')) message = `[${this.state.stage}] ${message}`;
     const markers = this.state.metadata.draftMarkers || [];
     if (!markers.includes(message)) markers.push(message);
     this.state.metadata.draftMarkers = markers;
+    if (!['project-intake', 'topic-discovery', 'topic-confirmation', 'protocol-design', 'experiment-execution', 'data-validation', 'submission-readiness'].includes(this.state.stage)) {
+      finishTask(this.state, this.state.stage, 'degraded', message);
+    }
     this.saveState();
     await this.ensureProjectDirs();
     await writeFile(this.outputPath('draft-markers.md'), [
@@ -1165,6 +1248,7 @@ export class PaperPipeline {
     await this.assertLiteratureComplete();
     await this.ensureProjectDirs();
     const reviewInstructions = await this.scientificReviewInstructions();
+    this.assertReviewContext(reviewInstructions);
     const feedbackContextHash = createHash('sha256').update(reviewInstructions).digest('hex');
     const evidenceOnly = Boolean((this.state as PipelineState & { deliveryEvidencePrepared?: unknown }).deliveryEvidencePrepared)
       || (this.state as LiteratureRevisionState).literatureRevision?.status === 'completed';
@@ -1218,6 +1302,8 @@ export class PaperPipeline {
       this.outputPath('paper-quality-report.md'),
       this.outputPath('scientific-review.md'),
       this.outputPath('docx-quality-report.md'),
+      this.outputPath('final-citation-verification-report.md'),
+      this.outputPath('final-scientific-review.md'),
     ];
 
     // Optional documents (checked but not blocking)
@@ -1235,16 +1321,20 @@ export class PaperPipeline {
 
     const openFeedback = readFeedback(this.outputDir).filter((item) => item.status === 'open');
     const literature = auditLiteratureCompleteness(this.state);
+    const reportText = (name: string) => existsSync(this.outputPath(name)) ? readFileSync(this.outputPath(name), 'utf8') : '';
+    const gates = deliveryGateStatuses({ data: reportText('data-validation.md'), citations: reportText('citation-verification-report.md'),
+      quality: reportText('paper-quality-report.md'), scientific: reportText('scientific-review.md'), docx: reportText('docx-quality-report.md'),
+      finalCitations: reportText('final-citation-verification-report.md'), finalScientific: reportText('final-scientific-review.md') });
     const deliveryBlocked = missingCore.length > 0 || openFeedback.length > 0
-      || (this.state.metadata.draftMarkers?.length || 0) > 0 || !literature.passed;
+      || (this.state.metadata.draftMarkers?.length || 0) > 0 || !literature.passed || Object.values(gates).some((passed) => !passed);
 
     const checklist = `# Submission Readiness
 
 ## Core Quality Gates
-- [${missingCore.length === 0 ? 'x' : ' '}] 实验数据验收
-- [${missingCore.length === 0 ? 'x' : ' '}] 引用核验
-- [${missingCore.length === 0 ? 'x' : ' '}] 独立科技质量审查
-- [${missingCore.length === 0 ? 'x' : ' '}] DOCX 导出质量检查
+- [${gates.data ? 'x' : ' '}] 实验数据验收
+- [${gates.citations && gates.finalCitations ? 'x' : ' '}] 引用核验
+- [${gates.scientific && gates.finalScientific ? 'x' : ' '}] 独立科技质量审查
+- [${gates.docx && gates.quality ? 'x' : ' '}] DOCX 导出质量检查
 - [${openFeedback.length ? ' ' : 'x'}] 研究者异议已处理（待处理 ${openFeedback.length} 项）
 
 ## Optional Documentation
@@ -1269,10 +1359,16 @@ Status: ${deliveryBlocked ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}
       + `\n## Literature Completeness\n\nStatus: ${literature.passed ? 'PASS' : 'BLOCKED'}\n${literature.issues.map((issue) => `- ${issue}`).join('\n')}\n`
       + (pendingReview.length ? `\n## Unresolved Submission Requirements\n\n${pendingReview.join('\n')}\n\nSubmission status: BLOCKED\n` : ''), 'utf8');
 
-    if (missingCore.length > 0) throw new Error(`投稿前仍缺少产物: ${missingCore.join(', ')}`);
+    if (missingCore.length > 0 && !this.state.metadata.draftMarkers?.length) throw new Error(`投稿前仍缺少产物: ${missingCore.join(', ')}`);
     if (openFeedback.length > 0) throw new Error(`投稿前仍有 ${openFeedback.length} 项研究者异议未处理；查看 ${join(this.milestoneDir, 'research-feedback.jsonl')}`);
     await this.assertLiteratureComplete();
+    if (deliveryBlocked) {
+      this.state.metadata.awaitingApproval = 'submission-readiness';
+      console.log('草稿文件已保留；真实门禁尚未全部通过，投稿清单为 BLOCKED，等待定点修复或作者输入。');
+      return;
+    }
     if ((this.state.metadata.draftMarkers?.length || 0) > 0) {
+      this.state.metadata.awaitingApproval = 'submission-readiness';
       console.log('本地稿已保留；交付状态为 BLOCKED，不是投稿就绪。查看 draft-markers.md 和 submission-manifest.md。');
       return;
     }
@@ -1287,6 +1383,7 @@ Status: ${deliveryBlocked ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}
       console.log(`[info] 可选文档缺失 ${missingOptional.length} 项，不阻断流程。详见 submission-manifest.md`);
     }
 
+    if (!this.onApproval) this.state.metadata.awaitingApproval = 'submission-readiness';
     console.log('投稿清单已生成；作者声明和实时期刊要求仍需人工确认。');
   }
 
@@ -1315,14 +1412,21 @@ Status: ${deliveryBlocked ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}
   // ===== 阶段 10: 输出交付 =====
   private async stageExport(): Promise<void> {
     console.log('正在导出论文...');
-    await this.refreshFinalCitationEvidence();
+    try { await this.refreshFinalCitationEvidence(); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      assertRecoverableContentFailure(message);
+      await this.recordDraftMarker(`Final citation check incomplete; unvalidated draft only: ${message}`);
+    }
 
-    const title = this.state.topic;
+    const title = this.state.metadata.draftMarkers?.length ? `UNVALIDATED DRAFT - ${this.state.topic}` : this.state.topic;
     const exportSections = outlineSections(this.state.sections, this.state.outline);
+    const authorBlock = this.manuscriptAuthorBlock();
 
     // 导出 Word
     const docxResult = await exportToDocx(exportSections, this.state.papers, {
       title,
+      authorBlock,
       outputDir: this.finalDir,
       projectDir: this.outputDir,
       citationStyle: 'GB-T-7714',
@@ -1335,16 +1439,28 @@ Status: ${deliveryBlocked ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}
     const docxQuality = await validateDocxFile(docxResult.data.filePath, exportedSourceReport.metrics);
     await writeFile(this.outputPath('docx-quality-report.md'), formatPaperQualityReport('DOCX Quality Gate', docxQuality), 'utf-8');
     if (!docxQuality.passed) await this.recordDraftMarker(`Word 导出后质量门禁未通过；见 ${this.outputPath('docx-quality-report.md')}`);
-    const finalReview = await reviewWithAdjudication(markdownToReviewSections(exportedMarkdown), await this.scientificReviewInstructions(), 'quality', join(this.stateDir, 'scientific-review-responses'));
-    if (!finalReview.success || !finalReview.data) throw new Error(finalReview.error || '最终稿外审没有返回结果');
-    await writeFile(this.outputPath('final-scientific-review.md'), formatScientificReview(finalReview.data), 'utf-8');
-    const finalBlocked = manuscriptReviewBlocked(finalReview.data);
+    let finalReview: Awaited<ReturnType<typeof reviewWithAdjudication>>;
+    try {
+      const instructions = await this.scientificReviewInstructions();
+      this.assertReviewContext(instructions);
+      finalReview = await reviewWithAdjudication(markdownToReviewSections(exportedMarkdown), instructions, 'quality', join(this.stateDir, 'scientific-review-responses'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      assertRecoverableContentFailure(message);
+      finalReview = { success: false, error: message };
+    }
+    if (!finalReview.success || !finalReview.data) {
+      assertRecoverableContentFailure(finalReview.error || 'Final scientific review unavailable');
+      await this.recordDraftMarker(`Final scientific review unavailable; draft only: ${finalReview.error || 'No result'}`);
+    } else await writeFile(this.outputPath('final-scientific-review.md'), formatScientificReview(finalReview.data), 'utf-8');
+    const finalBlocked = !finalReview.data || manuscriptReviewBlocked(finalReview.data);
     if (finalBlocked) await this.recordDraftMarker(`最终稿外审未通过；见 ${this.outputPath('final-scientific-review.md')}`);
     console.log(`Word 文档: ${docxResult.data.filePath} (${docxResult.data.format})`);
 
     // 导出 LaTeX
     const latexResult = await exportToLatex(exportSections, this.state.papers, {
       title,
+      authorBlock,
       outputDir: this.finalDir,
       template: 'ctex',
     });
@@ -1355,7 +1471,7 @@ Status: ${deliveryBlocked ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}
     } else throw new Error(latexResult.error || 'LaTeX 导出失败');
 
     // 保存完整 Markdown
-    const mdContent = buildSectionsMarkdown(exportSections);
+    const mdContent = [authorBlock, buildSectionsMarkdown(exportSections)].filter(Boolean).join('\n\n');
     await writeFile(this.outputPath('paper-full.md'), mdContent, 'utf-8');
     console.log(`完整 Markdown: ${this.outputPath('paper-full.md')}`);
   }
@@ -1380,6 +1496,15 @@ Status: ${deliveryBlocked ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}
       await this.recordDraftMarker(`终稿引用核验未通过；见 ${this.outputPath('final-citation-verification-report.md')}`);
     }
     await this.assertLiteratureComplete();
+  }
+
+  /** A workflow upgrade cannot silently reset a paid cross-review budget. */
+  private assertReviewContext(instructions: string): void {
+    const previous = (this.state as PipelineState & { qualityReviewProgress?: { contextHash?: string; rounds?: unknown[] } }).qualityReviewProgress;
+    if (!previous?.rounds?.length || !previous.contextHash) return;
+    const expected = createHash('sha256').update(JSON.stringify({ reviewInstructions: instructions,
+      primary: getRoute('quality'), secondary: getRoute('qualityCrossReview') })).digest('hex');
+    if (previous.contextHash !== expected) throw new Error('Review context changed; previous budget retained. Author approval is required for a new audit, not an automatic paid reset.');
   }
 
   // ===== 状态持久化 =====
@@ -1414,8 +1539,8 @@ Status: ${deliveryBlocked ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}
         ...parsed,
         notes: new Map(Object.entries(parsed.notes || {})),
       };
-    } catch {
-      return null;
+    } catch (error) {
+      throw new Error(`Cannot read existing paper checkpoint; retain it for recovery: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -1425,6 +1550,7 @@ Status: ${deliveryBlocked ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}
 
   private projectSubdirFor(fileName: string): string | undefined {
     if (/^(paper-full|.*\.docx$|.*\.tex$|.*\.bib$)/i.test(fileName)) return this.finalDir;
+    if (fileName === 'draft-markers.md') return this.milestoneDir;
     if (/(quality-report|scientific-review|cross-model-review|citation-verification|literature-completeness|submission-manifest|academic-style-audit)/i.test(fileName)) return this.reportsDir;
     if (/(experiment-run\.log)$/i.test(fileName)) return this.logsDir;
     if (/^(research-brief|revision-log|publication-record|topic-discovery|analysis-plan|data-validation|claim-evidence-matrix|research-integrity|cover-letter)\.md$/i.test(fileName)) return this.milestoneDir;
@@ -1444,7 +1570,12 @@ Status: ${deliveryBlocked ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}
   }
 
   private async cleanupRuntimeFiles(): Promise<void> {
-    await rm(this.runtimeDir, { recursive: true, force: true });
+    try {
+      const inventory = await maintainPipelineArtifacts(this.outputDir);
+      for (const warning of inventory.warnings) console.warn(`[artifact retention] ${warning}`);
+    } catch (error) {
+      console.warn('[artifact retention] Inventory unavailable; all files retained:', error);
+    }
   }
 
   private async organizeLegacyRootFiles(): Promise<void> {
@@ -1463,6 +1594,18 @@ Status: ${deliveryBlocked ? 'BLOCKED' : 'READY FOR AUTHOR CONFIRMATION'}
   /** 获取当前状态 */
   getState(): PipelineState {
     return this.state;
+  }
+
+  /** Title-page text from the workbench form. Blank forms add nothing. */
+  private manuscriptAuthorBlock(): string {
+    const path = join(this.stateDir, 'manuscript-authors.json');
+    if (!existsSync(path)) return '';
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as { authors?: unknown };
+      return renderAuthorBlock(parsed.authors ?? parsed);
+    } catch {
+      return '';
+    }
   }
 
   private async loadFullTexts(): Promise<Map<string, string>> {
@@ -1690,6 +1833,9 @@ async function main() {
   let approvalMode: ApprovalMode = 'topic';
   let approvedStage: PipelineStage | undefined;
   let decision = '';
+  let experimentResolution: ExperimentPlanOptions['authorResolution'];
+  let billingRestored = false;
+  let repairStage: PipelineStage | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--input-dir' && args[i + 1]) {
@@ -1702,6 +1848,14 @@ async function main() {
       experimentCommand = args[++i];
     } else if (args[i] === '--results-file' && args[i + 1]) {
       resultsFile = args[++i];
+    } else if (args[i] === '--experiment-resolution' && args[i + 1]) {
+      experimentResolution = JSON.parse(args[++i]) as ExperimentPlanOptions['authorResolution'];
+      if (!experimentResolution?.taskId || !['retry', 'validate', 'stop'].includes(experimentResolution.action)
+        || !experimentResolution.reason?.trim()) throw new Error('Explicit experiment task, action and author reason are required');
+    } else if (args[i] === '--billing-restored') {
+      billingRestored = true;
+    } else if (args[i] === '--repair-stage' && args[i + 1]) {
+      repairStage = args[++i] as PipelineStage;
     } else if (args[i] === '--output-dir' && args[i + 1]) {
       outputDir = args[++i];
     } else if (args[i] === '--project-id' && args[i + 1]) {
@@ -1759,6 +1913,10 @@ async function main() {
       console.log(`  已收到用户确认: ${stage}`);
       return true;
     }
+    if (stage === 'submission-readiness') {
+      console.log('  投稿需要作者明确确认，不能自动批准');
+      return false;
+    }
     if (approvalMode === 'auto') {
       console.log('  自动通过审批');
       return true;
@@ -1773,7 +1931,7 @@ async function main() {
     }
     console.log(`  等待用户确认阶段产物: ${stage}`);
     return false;
-  }, { inputDir, journalId, experimentCommand, resultsFile, outputDir, paperProjectId, researchDirection, decision });
+  }, { inputDir, journalId, experimentCommand, resultsFile, outputDir, paperProjectId, researchDirection, decision, experimentResolution, billingRestored, repairStage });
 
   if (paperProjectId) console.log(`[论文项目ID] ${paperProjectId}`);
 

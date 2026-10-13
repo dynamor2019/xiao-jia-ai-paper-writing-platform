@@ -1,10 +1,10 @@
 import type { OutlineNode, PipelineStage, PipelineState } from '../types.js';
 
 const WRITING_PHASES: Array<[PipelineStage, RegExp]> = [
-  ['introduction-writing', /introduction|background|related work|literature review|引言|前言|背景|相关工作|文献综述/i],
-  ['methods-writing', /method|methodology|materials|data|experimental setup|framework|algorithm|方法|材料|数据|实验设置|模型|算法/i],
   ['results-writing', /results?|findings?|evaluation|performance|结果|发现|评估|性能/i],
+  ['methods-writing', /method|methodology|materials|data|experimental setup|framework|algorithm|方法|材料|数据|实验设置|模型|算法/i],
   ['discussion-writing', /discussion|implication|limitation|threat|讨论|启示|局限|威胁/i],
+  ['introduction-writing', /introduction|background|related work|literature review|引言|前言|背景|相关工作|文献综述/i],
   ['manuscript-completion', /.*/],
 ];
 

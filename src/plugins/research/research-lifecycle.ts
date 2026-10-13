@@ -119,7 +119,7 @@ export async function createResearchProtocol(topic: string, papers: Paper[], not
     const evidence = papers.slice(0, 30).map((paper) => `${paper.id}: ${paper.title}; ${notes.get(paper.id)?.keyFindings || paper.abstract.slice(0, 300)}`).join('\n');
     const protocol = await getModelClient().generate(
       'You are an independent methods editor. Produce a concise, executable research protocol using compact bullets or tables. Include every required item, never fabricate data, and explicitly mark missing inputs BLOCKED.',
-      `Topic: ${topic}\nJournal: ${journalInstructions}\nEvidence:\n${evidence}\n\nWrite Markdown with: research question; falsifiable hypotheses; variables and operational definitions; datasets/sampling; explicit real/synthetic/simulated data labels; frozen inclusion/exclusion rules; baselines and controls; ablations; sensitivity/robustness; statistical analysis and uncertainty; causal-identification limits; leakage prevention; compute/software/seeds; ethics and data governance; figures/tables planned; acceptance criteria; failure/stop rules; reproducibility outputs; result-provenance schema linking every numeric claim to a machine output.`,
+      `Topic: ${topic}\nJournal: ${journalInstructions}\nEvidence:\n${evidence}\n\nWrite Markdown with: research question; falsifiable hypotheses; variables and operational definitions; datasets/sampling; explicit real/synthetic/simulated data labels; frozen inclusion/exclusion rules; baselines and controls; ablations; sensitivity/robustness; statistical analysis and uncertainty; causal-identification limits; leakage prevention; compute/software/seeds; ethics and data governance; figures/tables planned; acceptance criteria; failure/stop rules; reproducibility outputs; result-provenance schema linking every numeric claim to a machine output. Separate pilot feasibility checks (correct implementation, usable data, bounded cost) from formal hypothesis tests. Negative or null pilot findings must not be rejected merely for failing the desired hypothesis. Specify bounded batches tied to the research question, a compute budget, and stop/amendment criteria. Preserve original hypotheses; post-result alternatives are explicitly exploratory and require independent evidence for confirmation.`,
       { task: 'protocol', temperature: 0.1, maxTokens: 1800 },
     );
     const path = resolve(outputDir, 'analysis-plan.md');
@@ -132,15 +132,16 @@ export async function createResearchProtocol(topic: string, papers: Paper[], not
 }
 
 /** Run an explicitly supplied experiment command and preserve its complete audit log. */
-export async function runExperiment(command: string, outputDir = DEFAULT_OUTPUT_DIR, resultsFile?: string): Promise<ToolResult<string>> {
+export async function runExperiment(command: string, outputDir = DEFAULT_OUTPUT_DIR, resultsFile?: string, options: { cwd?: string; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ToolResult<string>> {
   if (!command.trim()) return { success: false, error: '未配置实验命令；请使用 --experiment-command 提供可复现的程序入口' };
   try {
     const resolvedOutputDir = resolve(outputDir);
     await mkdir(resolvedOutputDir, { recursive: true });
     const startedAt = new Date().toISOString();
     const { stdout, stderr } = await execAsync(command, {
-      cwd: process.cwd(),
-      timeout: Number(process.env.EXPERIMENT_TIMEOUT_MS || 3_600_000),
+      cwd: options.cwd || process.cwd(),
+      timeout: options.timeoutMs ?? Number(process.env.EXPERIMENT_TIMEOUT_MS || 3_600_000),
+      signal: options.signal,
       maxBuffer: 100 * 1024 * 1024,
       windowsHide: true,
     });

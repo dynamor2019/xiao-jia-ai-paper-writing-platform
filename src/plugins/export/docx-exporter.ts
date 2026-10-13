@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile);
 export interface ExportOptions {
   title: string;
   authors?: string[];
+  authorBlock?: string;
   abstract?: string;
   keywords?: string[];
   citationStyle?: 'GB-T-7714' | 'APA' | 'IEEE';
@@ -245,7 +246,9 @@ export function buildMarkdown(
   md += `# ${options.title}\n\n`;
 
   // 作者
-  if (options.authors?.length) {
+  if (options.authorBlock) {
+    md += `${options.authorBlock}\n\n`;
+  } else if (options.authors?.length) {
     md += `${options.authors.join(', ')}\n\n`;
   }
 

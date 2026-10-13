@@ -12,6 +12,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realp
 import { isAbsolute, join, basename, dirname, extname, relative, resolve, sep } from 'node:path';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { addFeedback, findClaimEvidence, readFeedback, resolveFeedback } from './paper-feedback.js';
+import { PAPER_PHASES as WORKBENCH_PHASES, paperStages, groupPaperPhases as groupWorkbenchPhases } from './paper-phases.js';
+import { sanitizeAuthorForm } from './manuscript-authors.mjs';
 
 const name = 'command-paper';
 const inject = ['commands', 'goals', 'webServer', 'systemPrompt', 'tools'];
@@ -58,7 +60,7 @@ const JOURNAL_SKILLS = {
   'ieee-transactions-on-automation-science-and-engineering': 'journal-ieee-transactions-on-automation-science-and-engineering',
   'expert-systems-with-applications': 'journal-expert-systems-with-applications',
 };
-const WORKBENCH_STAGE_LABELS = [
+const STAGE_LABELS = [
   ['project-intake', '研究建档'],
   ['topic-discovery', '联网选题'],
   ['topic-confirmation', '研究问题确认'],
@@ -80,27 +82,30 @@ const WORKBENCH_STAGE_LABELS = [
   ['export', '导出文件'],
   ['submission-readiness', '投稿清单'],
 ];
-const WORKBENCH_PHASES = [
-  ['direction', '选题确认', ['project-intake', 'topic-discovery', 'topic-confirmation']],
-  ['protocol', '方案与实验', ['protocol-design', 'experiment-execution', 'data-validation']],
-  ['literature', '文献与大纲', ['literature-search', 'literature-review', 'outline-generation']],
-  ['writing', '正文', ['introduction-writing', 'methods-writing', 'results-writing', 'discussion-writing', 'manuscript-completion']],
-  ['gates', '核验门禁', ['citation-verification', 'polishing', 'quality-validation']],
-  ['delivery', '交付', ['formatting', 'export', 'submission-readiness']],
-];
-function groupWorkbenchPhases(stages) {
-  return WORKBENCH_PHASES.map(([id, label, ids]) => {
-    const members = stages.filter((stage) => ids.includes(stage.id));
-    const status = members.some((stage) => stage.status === 'error') ? 'error'
-      : members.some((stage) => stage.status === 'active') ? 'active'
-        : members.length > 0 && members.every((stage) => stage.status === 'complete') ? 'complete'
-          : members.some((stage) => stage.status === 'complete') ? 'active'
-            : 'pending';
-    const current = members.find((stage) => stage.status === 'active' || stage.status === 'error');
-    return { id, label, status, passed: status === 'complete', detail: current?.label || '' };
-  });
-}
+const WORKBENCH_STAGE_LABELS = paperStages().map((id) => [id, new Map(STAGE_LABELS).get(id)]);
 const APPROVAL_STAGES = new Set(['topic-confirmation', 'protocol-design', 'outline-generation', 'submission-readiness']);
+
+function authorsPathForSession(agent) {
+  return join(RUNS_DIR, `${sessionKey(agent)}.authors.json`);
+}
+
+function projectAuthorsPath(outputDir) {
+  return join(outputDir, '.dsh-state', 'manuscript-authors.json');
+}
+
+function readAuthorForm(path) {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    return sanitizeAuthorForm(parsed.authors ?? parsed);
+  } catch {
+    return sanitizeAuthorForm(undefined);
+  }
+}
+
+function writeAuthorForm(path, authors) {
+  if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({ authors: sanitizeAuthorForm(authors) }, null, 2)}\n`, 'utf8');
+}
 
 function readTargetJournalId() {
   try {
@@ -203,6 +208,47 @@ function registerTargetJournalContext(ctx) {
       res.end(JSON.stringify(snapshot));
     },
   }), 'paper: workbench state route');
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-paper-authors',
+    handler: async (req, res) => {
+      const url = new URL(req.url || '/dsh-paper-authors', 'http://127.0.0.1');
+      const finish = (status, body) => {
+        res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(body));
+      };
+      try {
+        if (req.method === 'GET') {
+          const agent = { id: url.searchParams.get('sessionId') || '' };
+          const run = readRunState(agent);
+          const path = run?.outputDir && existsSync(projectAuthorsPath(run.outputDir))
+            ? projectAuthorsPath(run.outputDir)
+            : authorsPathForSession(agent);
+          finish(200, { authors: readAuthorForm(path) });
+          return;
+        }
+        if (req.method !== 'POST') {
+          finish(405, { error: '只接受 GET 或 POST' });
+          return;
+        }
+        const body = await readJsonBody(req, 32768);
+        const sessionId = String(body.sessionId || '').trim();
+        if (!sessionId) {
+          finish(400, { error: '缺少 sessionId' });
+          return;
+        }
+        const authors = sanitizeAuthorForm(body.authors);
+        const agent = { id: sessionId };
+        writeAuthorForm(authorsPathForSession(agent), authors);
+        const run = readRunState(agent);
+        if (run?.outputDir) writeAuthorForm(projectAuthorsPath(run.outputDir), authors);
+        finish(200, { authors });
+      } catch (error) {
+        finish(400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+  }), 'paper: author form route');
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -581,8 +627,12 @@ function reconcileRunState(agent) {
   const ownerPid = activeProjectPid(run.outputDir);
   if (ownerPid) {
     run.status = 'running';
-    run.pid = ownerPid;
+    run.pipelinePid = ownerPid;
+    if (!processIsRunning(run.pid)) run.pid = ownerPid;
     run.stage = checkpoint.stage || run.stage;
+  } else if (run.status === 'running' && processIsRunning(run.pid)) {
+    // A live supervisor may be waiting for its bounded recovery timer.
+    return run;
   } else if (checkpoint.metadata?.awaitingApproval) {
     run.status = 'awaiting-confirmation';
     run.stage = checkpoint.metadata.awaitingApproval;
@@ -678,7 +728,8 @@ function validateApprovalStage(outputDir, pipeline, stage, approvalMode = 'all')
   if (stage === 'submission-readiness') {
     const manifestPath = join(outputDir, 'milestones', 'submission-manifest.md');
     if (!existsSync(manifestPath)) return '缺少投稿清单，不能确认投稿阶段。';
-    if (!/READY FOR AUTHOR CONFIRMATION/.test(readFileSync(manifestPath, 'utf8'))) return '投稿清单仍未通过，请先处理阻断项。';
+    const manifest = readFileSync(manifestPath, 'utf8');
+    if (!/READY FOR AUTHOR CONFIRMATION/.test(manifest) || /(?:Status|Submission status):\s*BLOCKED/i.test(manifest)) return '投稿清单仍未通过，请先处理阻断项。';
     return '';
   }
   if (pipeline.metadata?.pendingQuestion?.stage === stage) return '';
@@ -687,6 +738,10 @@ function validateApprovalStage(outputDir, pipeline, stage, approvalMode = 'all')
 
 function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resultsFile, outputDir, agent, approvalMode = 'topic', researchDirection = {}, approvedStage = '', decision = '') {
   assertPipelineChain(outputDir);
+  const existingRun = readRunState(agent);
+  if (existingRun?.outputDir === outputDir && existingRun.status === 'running' && processIsRunning(existingRun.pid)) {
+    throw new Error('论文后台监督仍在运行或等待有限恢复，不启动第二个写作者。');
+  }
   const ownerPid = activeProjectPid(outputDir);
   if (ownerPid) throw new Error(`论文项目正在进程 ${ownerPid} 中运行，请等待完成后再恢复。`);
   const tsxCli = join(PROJECT_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs');
@@ -702,6 +757,10 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
   if (journalId) pipelineArgs.push('--journal', journalId);
   if (experimentCommand) pipelineArgs.push('--experiment-command', experimentCommand);
   if (resultsFile) pipelineArgs.push('--results-file', resultsFile);
+  const resolution = readRunState(agent)?.experimentResolution;
+  if (resolution) pipelineArgs.push('--experiment-resolution', JSON.stringify(resolution));
+  if (readRunState(agent)?.billingRestored === true) pipelineArgs.push('--billing-restored');
+  if (readRunState(agent)?.repairStage) pipelineArgs.push('--repair-stage', readRunState(agent).repairStage);
   if (researchDirection.focus) pipelineArgs.push('--focus', researchDirection.focus);
   if (researchDirection.scope) pipelineArgs.push('--scope', researchDirection.scope);
   if (researchDirection.method) pipelineArgs.push('--method', researchDirection.method);
@@ -711,6 +770,9 @@ function startPipeline(ctx, topic, inputDir, journalId, experimentCommand, resul
   if (decision) pipelineArgs.push('--decision', decision);
   pipelineArgs.push('--output-dir', outputDir);
   pipelineArgs.push('--project-id', activeProjectId(agent));
+  const sessionAuthors = authorsPathForSession(agent);
+  const projectAuthors = projectAuthorsPath(outputDir);
+  if (!existsSync(projectAuthors) && existsSync(sessionAuthors)) writeAuthorForm(projectAuthors, readAuthorForm(sessionAuthors));
   const requestPath = join(RUNS_DIR, `${sessionKey(agent)}-${Date.now()}.request.json`);
   writeFileSync(requestPath, JSON.stringify({
     projectDir: PROJECT_DIR,
@@ -811,7 +873,7 @@ async function workbenchText(ctx, invocation) {
     `目标期刊: ${snapshot.journalName}`,
     statusText(ctx, invocation),
     '',
-    ...snapshot.phases.map((phase, index) => `${index + 1}. ${phase.label}: ${phase.passed ? 'READY' : phase.status === 'active' ? '进行中' : phase.status === 'error' ? '需处理' : '未开始'}${phase.detail ? `（${phase.detail}）` : ''}`),
+    ...snapshot.phases.map((phase, index) => `${index + 1}. ${phase.label}: ${phase.passed ? 'READY' : phase.status === 'active' ? '进行中' : phase.status === 'error' ? '需处理' : phase.status === 'degraded' ? '草稿继续，待核验' : '未开始'}${phase.detail ? `（${phase.detail}）` : ''}`),
     `当前内部步骤: ${snapshot.stage}`,
     '',
     `输入资料: ${snapshot.inputCount} 个文件`,
@@ -839,6 +901,7 @@ async function workbenchSnapshot(agent) {
       inputCount: 0,
       deliverableCount: 0,
       quality: '未运行',
+      authors: readAuthorForm(authorsPathForSession(agent)),
     };
   }
   const running = state.status === 'running' && processIsRunning(state.pid);
@@ -862,16 +925,20 @@ async function workbenchSnapshot(agent) {
   const pipeline = readPipelineState(baseDir);
   const openFeedback = readFeedback(baseDir).filter((item) => item.status === 'open').length;
   const runStatus = running ? 'running' : state.status;
-  const pipelineStage = WORKBENCH_STAGE_LABELS.some(([id]) => id === state.stage) ? state.stage : pipeline?.stage || 'project-intake';
+  const pipelineStage = pipeline?.stage || (WORKBENCH_STAGE_LABELS.some(([id]) => id === state.stage) ? state.stage : 'project-intake');
   const currentIndex = Math.max(0, WORKBENCH_STAGE_LABELS.findIndex(([id]) => id === pipelineStage));
   const stages = WORKBENCH_STAGE_LABELS.map(([id, label], index) => {
+    const tasks = pipeline?.metadata?.workflow?.tasks;
+    if (tasks) {
+      const task = tasks[id];
+      const recordedStatus = { complete: 'complete', running: 'active', waiting: 'active', degraded: 'degraded', failed: 'error' }[task?.status] || 'pending';
+      const status = id === pipelineStage && runStatus === 'failed' ? 'error' : recordedStatus;
+      return { id, label, passed: status === 'complete', status, detail: task?.error || '' };
+    }
     let status = index < currentIndex ? 'complete' : 'pending';
     if (runStatus === 'completed') status = 'complete';
     if (index === currentIndex && ['running', 'awaiting-confirmation'].includes(runStatus)) status = 'active';
     if (index === currentIndex && runStatus === 'failed') status = 'error';
-    if (id === 'project-intake' && existsSync(join(baseDir, 'milestones', 'research-brief.md')) && status === 'pending') status = 'complete';
-    if (id === 'export' && word && status === 'pending') status = 'complete';
-    if (id === 'quality-validation' && quality === 'PASS' && status === 'pending') status = 'complete';
     return { id, label, passed: status === 'complete', status };
   });
   const phases = groupWorkbenchPhases(stages);
@@ -885,8 +952,9 @@ async function workbenchSnapshot(agent) {
     outputDir: baseDir,
     paperProjectId: workspace?.paperProjectId || pipeline?.metadata?.paperProjectId || state.paperProjectId || paperProjectId(agent),
     runStatus,
-    stage: state.stage || pipelineStage,
+    stage: pipelineStage,
     stageLabel: Object.fromEntries(WORKBENCH_STAGE_LABELS)[pipelineStage] || pipelineStage,
+    authors: readAuthorForm(existsSync(projectAuthorsPath(baseDir)) ? projectAuthorsPath(baseDir) : authorsPathForSession(agent)),
     nextRetryAt: state.nextRetryAt,
     recoveryCount: state.recoveryCount,
     stages: phases,
@@ -1000,10 +1068,16 @@ function apply(ctx) {
     name: 'continue_paper_workflow',
     description: 'Inspect the bound paper workflow, bind a reproducible in-project experiment script, resume a failed/interrupted stage, or confirm a checkpoint only after the user explicitly approved that exact stage. Never start a parallel CLI pipeline.',
     parameters: {
-      action: { type: 'string', required: true, enum: ['status', 'confirm', 'configure-experiment', 'resume'] },
+      action: { type: 'string', required: true, enum: ['status', 'confirm', 'configure-experiment', 'resolve-experiment', 'repair-gate', 'resume'] },
+      gateStage: { type: 'string', enum: ['citation-verification', 'polishing', 'quality-validation', 'formatting'], description: 'A single repaired manuscript gate to recheck; never resets cached reviews or attempt limits.' },
       userConfirmed: { type: 'boolean', description: 'Set true only when the user explicitly approved the currently pending checkpoint in this conversation.' },
+      billingRestored: { type: 'boolean', description: 'Set true only after the author explicitly confirmed restored relay balance/account access.' },
       experimentScript: { type: 'string', description: 'Existing .mjs, .js, or .py script inside the bound paper project.' },
       resultsFile: { type: 'string', description: 'CSV, TSV, or JSON output path inside the project experiments/results directory.' },
+      experimentTask: { type: 'string', description: 'Interrupted plan task ID, such as pilot or formal-1.' },
+      resolutionAction: { type: 'string', enum: ['retry', 'validate', 'stop'], description: 'Author-approved resolution; validate adopts existing completed output without rerunning it.' },
+      resolutionReason: { type: 'string', description: 'The actual author decision and reason; do not infer permission.' },
+      executionLog: { type: 'string', description: 'Existing project-local execution log when adopting interrupted output.' },
     },
     output: {
       schema: { type: 'string' },
@@ -1025,10 +1099,34 @@ function apply(ctx) {
       if (!run?.outputDir) return '本对话尚未绑定论文项目。';
       const checkpointState = readPipelineState(run.outputDir);
       const stage = checkpointState?.stage || run.stage;
+      if (args.action === 'repair-gate') {
+        if (args.userConfirmed !== true) return '定点门禁重检需要作者明确确认，不清除旧标记或付费限额。';
+        if (activeProjectPid(run.outputDir) || (run.status === 'running' && processIsRunning(run.pid))) return '已有后台任务运行，不启动第二个重检任务。';
+        if (!['citation-verification', 'polishing', 'quality-validation', 'formatting'].includes(args.gateStage)) return '请选择一个具体的稿件门禁。';
+        run.repairStage = args.gateStage;
+        saveRunState(agent, run);
+        startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, run.outputDir, agent, resolveApprovalMode(run.approvalMode), run.researchDirection);
+        return `已启动 ${args.gateStage} 定点重检；保留正文、结果、审查缓存和原限额，真实通过后才解除该门禁标记。`;
+      }
+      const stoppedError = checkpointState?.metadata?.workflow?.tasks?.[stage]?.error || run.error || '';
+      if (args.action === 'resume' && /insufficient balance|billing_error|insufficient_quota|credit balance|billing failure|余额不足|额度不足/i.test(stoppedError)) {
+        if (args.userConfirmed !== true || args.billingRestored !== true) return '此前余额或额度错误已停止；需要作者明确确认充值恢复后才能续跑，未重复计费。';
+        run.billingRestored = true;
+        saveRunState(agent, run);
+      }
+      if (args.action === 'resolve-experiment') {
+        if (args.userConfirmed !== true) return '中断实验恢复必须由作者明确确认，未修改检查点。';
+        if (activeProjectPid(run.outputDir) || (run.status === 'running' && processIsRunning(run.pid))) return '流水线或后台监督仍在运行，不能处理实验中断。';
+        if (!['protocol-design', 'experiment-execution'].includes(stage)) return `当前阶段 ${stage} 不接受实验恢复决策。`;
+        if (!args.experimentTask || !['retry', 'validate', 'stop'].includes(args.resolutionAction) || !args.resolutionReason?.trim()) return '需要具体实验任务、恢复动作和作者确认理由。';
+        run.experimentResolution = { taskId: args.experimentTask, action: args.resolutionAction, reason: args.resolutionReason, logFile: args.executionLog };
+        saveRunState(agent, run);
+        return '已记录作者实验恢复决定；检查点和次数没有重置，调用 resume 后由流水线核对并执行。';
+      }
       if (args.action === 'configure-experiment') {
         if (run.status === 'awaiting-confirmation') return '当前阶段正在等待作者确认；不能配置或启动实验。';
         if (activeProjectPid(run.outputDir)) return `论文流水线仍在运行（${stage}），不能更改实验配置。`;
-        if (stage !== 'experiment-execution') return `当前阶段为 ${stage}，只有到达 experiment-execution 后才能绑定实验程序。`;
+        if (!['protocol-design', 'experiment-execution'].includes(stage)) return `当前阶段为 ${stage}，只有方案或实验阶段才能绑定实验程序。`;
         if (!args.experimentScript || !args.resultsFile) return '绑定实验程序必须同时提供项目内脚本路径和 experiments/results 下的结果文件路径。';
         const configuration = resolveExperimentConfiguration(run.outputDir, args.experimentScript, args.resultsFile);
         run.experimentCommand = configuration.command;
@@ -1040,11 +1138,11 @@ function apply(ctx) {
         return `已绑定项目内实验脚本：${args.experimentScript}\n结果文件：${configuration.resultsFile}\n尚未启动；先核对研究方案与参数证据，再调用 resume。`;
       }
       if (run.status === 'awaiting-confirmation') return '流水线正在等待用户确认当前关卡；不得自动跳过。';
-      if (activeProjectPid(run.outputDir)) return `论文流水线仍在运行（${run.stage}），无需重复启动。`;
+      if (activeProjectPid(run.outputDir) || (run.status === 'running' && processIsRunning(run.pid))) return `论文流水线仍在运行（${run.stage}），无需重复启动。`;
       if (run.status === 'completed') return '论文流水线已完成，无需恢复。';
       const checkpoint = join(run.outputDir, '.dsh-state', 'paper-pipeline-state.json');
       if (!existsSync(checkpoint)) return '检查点缺失，未启动恢复。';
-      if (stage === 'experiment-execution' && (!run.experimentCommand || !run.resultsFile)) {
+      if (stage === 'experiment-execution' && (!run.experimentCommand || !run.resultsFile) && !existsSync(join(run.outputDir, 'milestones', 'experiment-plan.json'))) {
         return '实验阶段尚无可复现程序或结果路径，未重复启动失败任务。助手应检查方案与现有数据；有充分证据时在项目内编写程序并调用 configure-experiment，证据不足时记录具体阻断项，不能要求用户手动输入 CLI 命令或虚构结果。';
       }
       const approvalMode = resolveApprovalMode(run.approvalMode);
@@ -1287,7 +1385,7 @@ function apply(ctx) {
         return { kind: 'error', text: '找到中断任务但检查点缺失。助手应根据当前对话上下文提炼原研究主题并主动调用 /paper 重建任务，不要要求用户重复任务描述或手动输入命令。' };
         }
         const pipelineState = readPipelineState(outputDir);
-        if (pipelineState?.stage === 'experiment-execution' && (!run.experimentCommand || !run.resultsFile)) {
+        if (pipelineState?.stage === 'experiment-execution' && (!run.experimentCommand || !run.resultsFile) && !existsSync(join(outputDir, 'milestones', 'experiment-plan.json'))) {
           return { kind: 'error', text: '实验阶段缺少可复现程序或结果路径，未重复启动失败任务。助手应检查项目方案与数据；证据充分时在项目 code/ 内编写程序并通过 continue_paper_workflow 的 configure-experiment 动作绑定，证据不足时记录阻断项，不能虚构实验结果。' };
         }
         startPipeline(ctx, run.topic, run.inputDir, run.journalId, run.experimentCommand, run.resultsFile, outputDir, invocation.agent, resolveApprovalMode(run.approvalMode), run.researchDirection);
