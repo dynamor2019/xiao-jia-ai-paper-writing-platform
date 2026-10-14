@@ -215,6 +215,11 @@ async function applyPlan(actions, dryRun) {
     if (dryRun) continue;
     const current = await lstat(action.path);
     if (!current.isFile() || current.isSymbolicLink() || !await isInside(DATA_ROOT, action.path)) continue;
+    if (action.retainedPath && action.sha256) {
+      const retained = await lstat(action.retainedPath).catch(() => undefined);
+      if (!retained?.isFile() || retained.isSymbolicLink() || !await isInside(DATA_ROOT, action.retainedPath)) continue;
+      if (await hashFile(action.path) !== action.sha256 || await hashFile(action.retainedPath) !== action.sha256) continue;
+    }
     await rm(action.path, { recursive: action.type === 'directory', force: true });
     removedItems += 1;
     removedBytes += action.bytes;
