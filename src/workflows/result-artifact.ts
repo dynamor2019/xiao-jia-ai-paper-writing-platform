@@ -57,18 +57,22 @@ export async function reconcileReproducibilityResult(
   const duplicatePath = join(resultsDir, fileName);
   let duplicateToRemove: string | undefined;
   let outcome: 'duplicate-removed' | 'different-copy-retained' | 'no-copy' = 'no-copy';
-  if (localSource && resolve(duplicatePath) !== resolve(sourcePath)) {
+  const manifestPath = join(resultsDir, 'source-manifest.json');
+  if (resolve(duplicatePath) !== resolve(sourcePath) && resolve(duplicatePath) !== resolve(manifestPath)) {
     const duplicateStat = await lstat(duplicatePath).catch(() => undefined);
     if (duplicateStat?.isSymbolicLink()) throw new Error('Refusing to inspect a linked reproducibility result copy');
     if (duplicateStat?.isFile()) {
       if (await sha256(duplicatePath) === sourceHash) {
+        const duplicateAfterHash = await lstat(duplicatePath);
+        if (duplicateAfterHash.size !== duplicateStat.size || duplicateAfterHash.mtimeMs !== duplicateStat.mtimeMs) {
+          throw new Error('Reproducibility result copy changed while its hash was computed');
+        }
         duplicateToRemove = duplicatePath;
         outcome = 'duplicate-removed';
       } else outcome = 'different-copy-retained';
     }
   }
 
-  const manifestPath = join(resultsDir, 'source-manifest.json');
   const existing = await lstat(manifestPath).catch(() => undefined);
   if (existing?.isSymbolicLink() || existing && !existing.isFile()) throw new Error('Reproducibility result manifest path is not a regular file');
   if (existing?.isFile()) {

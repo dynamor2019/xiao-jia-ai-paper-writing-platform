@@ -62,15 +62,19 @@ test('shared processed results are referenced by URI and hash without copying in
     const source = join(sharedRoot, 'processed', 'paper-01', 'run-01', 'result.json');
     await mkdir(join(source, '..'), { recursive: true });
     await writeFile(source, '{"estimate":null}\n');
+    const copy = join(root, 'milestones', 'reproducibility', 'results', 'result.json');
+    await mkdir(join(copy, '..'), { recursive: true });
+    await writeFile(copy, '{"estimate":null}\n');
     assert.equal(await reconcileReproducibilityResult(root, source, {
       sharedDataRoot: sharedRoot, sharedDataScope: 'paper-01',
-    }), 'no-copy');
+    }), 'duplicate-removed');
     const manifestPath = join(root, 'milestones', 'reproducibility', 'results', 'source-manifest.json');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     assert.equal(manifest.sourcePath, '@shared/processed/paper-01/run-01/result.json');
     assert.equal(manifest.bytes, 18);
     assert.match(manifest.sha256, /^[a-f0-9]{64}$/);
     assert.equal(await readFile(source, 'utf8'), '{"estimate":null}\n');
+    assert.equal(await stat(copy).catch(() => null), null);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(sharedRoot, { recursive: true, force: true });
