@@ -24,6 +24,7 @@ export const dshConfig = {
     allowedPaths: [
       './knowledge-base',
       process.env.PAPER_DATA_ROOT || DEFAULT_DATA_ROOT,
+      process.env.PAPER_SHARED_DATA_ROOT || join(process.env.PAPER_DATA_ROOT || DEFAULT_DATA_ROOT, 'output', 'shared'),
       './temp',
     ],
     // 允许执行的命令

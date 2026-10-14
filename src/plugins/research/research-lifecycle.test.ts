@@ -1,12 +1,33 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { getModelClient } from '../../lib/model-client.js';
-import { createResearchProtocol, discoverResearchTopic, searchScholarlyWorks, validateExperimentResults } from './research-lifecycle.js';
+import { createResearchProtocol, discoverResearchTopic, runExperiment, searchScholarlyWorks, validateExperimentResults } from './research-lifecycle.js';
+
+test('experiment subprocess receives shared-data and paper-local output paths through its environment', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-experiment-env-'));
+  try {
+    const sharedRoot = join(root, 'shared');
+    const outputDir = join(root, 'paper', 'milestones', 'reproducibility', 'logs');
+    const resultsFile = join(sharedRoot, 'processed', 'paper-01', 'run-01', 'result.json');
+    const script = join(root, 'write-result.mjs');
+    await mkdir(outputDir, { recursive: true });
+    await mkdir(join(resultsFile, '..'), { recursive: true });
+    await writeFile(script, [
+      "import { writeFileSync } from 'node:fs';",
+      "writeFileSync(process.env.DSH_RESULTS_FILE, JSON.stringify({ shared: process.env.PAPER_SHARED_DATA_ROOT, output: process.env.DSH_EXPERIMENT_OUTPUT_DIR }));",
+    ].join('\n'));
+    const execution = await runExperiment(`"${process.execPath}" "${script}"`, outputDir, resultsFile, { sharedDataRoot: sharedRoot });
+    assert.equal(execution.success, true);
+    assert.deepEqual(JSON.parse(await readFile(resultsFile, 'utf8')), { shared: sharedRoot, output: outputDir });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('research protocol output budget stays within relay request limits', async () => {
   const outputDir = await mkdtemp(join(tmpdir(), 'dsh-protocol-budget-'));

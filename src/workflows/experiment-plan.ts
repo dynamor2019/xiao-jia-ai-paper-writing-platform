@@ -23,7 +23,7 @@ export interface ExperimentValidationInput {
   protocolFile: string;
 }
 
-interface RunBudget { cwd: string; timeoutMs: number; signal: AbortSignal }
+interface RunBudget { cwd: string; timeoutMs: number; signal: AbortSignal; sharedDataRoot?: string }
 interface AuthorResolution {
   taskId: string;
   action: 'retry' | 'validate' | 'stop';
@@ -57,6 +57,8 @@ export interface ExperimentPlanCheckpoint {
 
 export interface ExperimentPlanOptions {
   projectDir: string;
+  sharedDataRoot?: string;
+  sharedDataScope?: string;
   phase: 'pilot' | 'formal';
   planFile?: string;
   protocolFile: string;
@@ -83,6 +85,8 @@ export class ExperimentPlanError extends Error {
 interface Task extends PlanTask { id: string }
 interface Context {
   root: string;
+  sharedDataRoot?: string;
+  sharedDataScope?: string;
   planFile: string;
   protocolFile: string;
   stateFile: string;
@@ -147,6 +151,54 @@ async function result_path(root: string, input: string): Promise<string> {
   return file;
 }
 
+/** Resolve explicit shared references while rejecting traversal and linked paths. */
+async function shared_path(sharedRoot: string | undefined, input: string, allowed: string[], output = false): Promise<string> {
+  if (!sharedRoot || !input.startsWith('@shared/')) throw new Error('Shared data path requires PAPER_SHARED_DATA_ROOT and an @shared/ reference');
+  const parts = input.slice('@shared/'.length).split('/');
+  if (parts.some((part) => !part || part === '.' || part === '..' || part.includes('\\') || /[:]|[. ]$/.test(part))) {
+    throw new Error('Invalid shared data path: ' + input);
+  }
+  if (!allowed.includes(parts[0])) throw new Error('Shared data path must use an approved namespace: ' + input);
+  await mkdir(resolve(sharedRoot), { recursive: true });
+  const base = await realpath(resolve(sharedRoot));
+  let current = base;
+  for (const part of parts) {
+    current = join(current, part);
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) throw new Error('Shared data symlink/junction paths are not allowed: ' + input);
+      if (output && info.isFile() && info.nlink > 1) throw new Error('Hardlinked shared output is not allowed: ' + input);
+      current = await realpath(current);
+      if (!inside(base, current)) throw new Error('Shared data path escapes its configured root: ' + input);
+    } catch (error) { if (!missing(error)) throw error; }
+  }
+  return current;
+}
+
+async function input_path(root: string, input: string, sharedRoot?: string): Promise<string> {
+  if (!input.startsWith('@shared/')) return project_path(root, input);
+  if (input.startsWith('@shared/datasets/') && input.slice('@shared/datasets/'.length).split('/').length < 3) {
+    throw new Error('Shared datasets must include a dataset ID and version');
+  }
+  return shared_path(sharedRoot, input, ['datasets', 'processed']);
+}
+
+async function result_path_scoped(root: string, input: string, sharedRoot?: string, scope?: string): Promise<string> {
+  if (isAbsolute(input) && sharedRoot && scope) {
+    const sharedRelative = relative(await realpath(resolve(sharedRoot)), await realpath(resolve(input)).catch(() => resolve(input)));
+    if (sharedRelative && !sharedRelative.startsWith('..' + sep) && !isAbsolute(sharedRelative)) {
+      input = '@shared/' + sharedRelative.split(sep).join('/');
+    }
+  }
+  if (!input.startsWith('@shared/')) return result_path(root, input);
+  if (!scope || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$/.test(scope)) throw new Error('Shared results require a valid paper data scope');
+  const parts = input.slice('@shared/'.length).split('/');
+  if (parts[0] !== 'processed' || parts[1] !== scope || parts.length < 4) {
+    throw new Error('Shared experiment results must be namespaced under processed/<paper-scope>/<run-id>');
+  }
+  return shared_path(sharedRoot, input, ['processed'], true);
+}
+
 /** Bind checkpoints to exact bytes, accepting only nonempty regular files. */
 async function fingerprint(file: string): Promise<string> {
   const info = await lstat(file);
@@ -166,7 +218,7 @@ function parse_plan(bytes: Buffer, max_batches: number): ExperimentPlan {
   }
   if (mode === 'run-experiments' && !plan.pilot) throw new Error('run-experiments mode requires a feasibility pilot');
   if (mode === 'provided-data' && (!Array.isArray(plan.sourceFiles) || plan.sourceFiles.length === 0
-    || plan.sourceFiles.some((file) => !text(file)))) throw new Error('provided-data mode requires project-relative sourceFiles');
+    || plan.sourceFiles.some((file) => !text(file)))) throw new Error('provided-data mode requires project-relative or @shared/datasets sourceFiles');
   const ids = new Set<string>(plan.pilot ? ['pilot'] : []);
   for (const task of [...(plan.pilot ? [plan.pilot] : []), ...plan.batches]) {
     if (!task || !text(task.command) || !text(task.resultsFile)) throw new Error('Every task requires an explicit command and resultsFile');
@@ -180,11 +232,11 @@ function parse_plan(bytes: Buffer, max_batches: number): ExperimentPlan {
 }
 
 /** Reject output/input collisions and shared result files before creating state. */
-async function resolve_tasks(root: string, plan: ExperimentPlan, inputs: string[]): Promise<Task[]> {
+async function resolve_tasks(root: string, plan: ExperimentPlan, inputs: string[], sharedRoot?: string, scope?: string): Promise<Task[]> {
   const tasks: Task[] = [];
-  const planned = [...(plan.pilot ? [{ ...plan.pilot, id: 'pilot' }] : []), ...plan.batches];
+  const planned = [...(plan.executionMode === 'provided-data' || !plan.pilot ? [] : [{ ...plan.pilot, id: 'pilot' }]), ...plan.batches];
   for (const task of planned) {
-    const resultsFile = await result_path(root, task.resultsFile);
+    const resultsFile = await result_path_scoped(root, task.resultsFile, sharedRoot, scope);
     const reserved = resolve(root, AUDIT_DIR);
     if (inputs.some((file) => same_path(file, resultsFile) || inside(resultsFile, file)) || same_path(resultsFile, reserved) || inside(reserved, resultsFile)
       || tasks.some((previous) => same_path(previous.resultsFile, resultsFile)
@@ -197,8 +249,8 @@ async function resolve_tasks(root: string, plan: ExperimentPlan, inputs: string[
 }
 
 /** Bind existing datasets to the plan without treating them as newly executed experiments. */
-async function resolve_sources(root: string, plan: ExperimentPlan, planFile: string, protocolFile: string): Promise<{ files: string[]; hashes: Record<string, string> }> {
-  const files = await Promise.all((plan.sourceFiles || []).map((file) => project_path(root, file)));
+async function resolve_sources(root: string, plan: ExperimentPlan, planFile: string, protocolFile: string, sharedRoot?: string): Promise<{ files: string[]; hashes: Record<string, string> }> {
+  const files = await Promise.all((plan.sourceFiles || []).map((file) => input_path(root, file, sharedRoot)));
   if (new Set(files).size !== files.length || files.some((file) => same_path(file, planFile) || same_path(file, protocolFile))) {
     throw new Error('Provided source files must be unique and cannot alias the plan or protocol');
   }
@@ -267,7 +319,7 @@ async function evidence_path(ctx: Context, file: string, task_id: string): Promi
 async function verify_evidence(ctx: Context, task: Task): Promise<void> {
   const record = ctx.state.tasks[task.id];
   try {
-    await result_path(ctx.root, task.resultsFile);
+    await result_path_scoped(ctx.root, task.resultsFile, ctx.sharedDataRoot, ctx.sharedDataScope);
     if (!record.resultsHash || !record.logFile || !record.logHash
       || await fingerprint(task.resultsFile) !== record.resultsHash
       || await fingerprint(await evidence_path(ctx, record.logFile, task.id)) !== record.logHash) throw new Error('Results/log changed');
@@ -287,7 +339,8 @@ async function bounded<T>(callback: (budget: RunBudget) => Promise<T>, ctx: Cont
       reject(error);
     }, ctx.timeoutMs);
   });
-  try { return await Promise.race([Promise.resolve().then(() => callback({ cwd: ctx.root, timeoutMs: ctx.timeoutMs, signal: controller.signal })), deadline]); }
+  try { return await Promise.race([Promise.resolve().then(() => callback({ cwd: ctx.root, timeoutMs: ctx.timeoutMs,
+    signal: controller.signal, sharedDataRoot: ctx.sharedDataRoot })), deadline]); }
   finally { clearTimeout(timer); }
 }
 
@@ -329,7 +382,13 @@ async function audit_directory(ctx: Context, task: Task, attempt: string): Promi
 async function execute_task(ctx: Context, task: Task): Promise<void> {
   const record = ctx.state.tasks[task.id];
   if (record.attempts >= MAX_ATTEMPTS) throw new ExperimentPlanError('attempts-exhausted', 'Execution attempts exhausted', task.id);
+  if (record.attempts === 0) {
+    const existingResult = await lstat(task.resultsFile).catch((error) => { if (missing(error)) return undefined; throw error; });
+    if (existingResult) throw new ExperimentPlanError('output-collision', 'Refusing to overwrite an existing experiment result; choose a new run-id', task.id);
+  }
   const output = await audit_directory(ctx, task, 'run-' + (record.attempts + 1));
+  await result_path_scoped(ctx.root, task.resultsFile, ctx.sharedDataRoot, ctx.sharedDataScope);
+  await mkdir(dirname(task.resultsFile), { recursive: true });
   record.status = 'running';
   record.phase = 'run';
   record.attempts += 1;
@@ -343,7 +402,7 @@ async function execute_task(ctx: Context, task: Task): Promise<void> {
   await verify_binding(ctx);
   record.logFile = await evidence_path(ctx, successful_path(reply), task.id);
   record.logHash = await fingerprint(record.logFile);
-  await result_path(ctx.root, task.resultsFile);
+  await result_path_scoped(ctx.root, task.resultsFile, ctx.sharedDataRoot, ctx.sharedDataScope);
   record.resultsHash = await fingerprint(task.resultsFile);
   record.status = 'executed';
   record.phase = 'validate';
@@ -390,7 +449,7 @@ async function resolve_author(ctx: Context): Promise<void> {
   if (request.action === 'validate' && record.phase === 'run') {
     record.logFile = await evidence_path(ctx, request.logFile || '', task.id);
     record.logHash = await fingerprint(record.logFile);
-    await result_path(ctx.root, task.resultsFile);
+    await result_path_scoped(ctx.root, task.resultsFile, ctx.sharedDataRoot, ctx.sharedDataScope);
     record.resultsHash = await fingerprint(task.resultsFile);
   }
   record.authorResolution = { ...request };
@@ -438,17 +497,20 @@ async function prepare(options: ExperimentPlanOptions): Promise<Context | undefi
   }
   const protocolFile = await project_path(root, options.protocolFile);
   const stateFile = await project_path(root, STATE_FILE);
-  const sources = await resolve_sources(root, plan, planFile, protocolFile);
-  const tasks = await resolve_tasks(root, plan, [planFile, protocolFile, ...sources.files]);
+  const sharedDataRoot = options.sharedDataRoot ? resolve(options.sharedDataRoot) : undefined;
+  const sources = await resolve_sources(root, plan, planFile, protocolFile, sharedDataRoot);
+  const tasks = await resolve_tasks(root, plan, [planFile, protocolFile, ...sources.files], sharedDataRoot, options.sharedDataScope);
   if ([planFile, protocolFile].some((file) => same_path(file, stateFile) || same_path(file, stateFile + '.lock')
     || inside(resolve(root, AUDIT_DIR), file))) throw new Error('Plan/protocol cannot occupy managed checkpoint/audit paths');
-  if (options.resultsFile && !same_path(tasks.at(-1)!.resultsFile, await result_path(root, options.resultsFile))) {
+  if (options.resultsFile && !same_path(tasks.at(-1)!.resultsFile,
+    await result_path_scoped(root, options.resultsFile, sharedDataRoot, options.sharedDataScope))) {
     throw new Error('Last formal batch must equal the configured main resultsFile');
   }
   const state: ExperimentPlanCheckpoint = { schemaVersion: 1, planHash: createHash('sha256').update(bytes).digest('hex'),
     protocolHash: await fingerprint(protocolFile), sourceHashes: sources.hashes, tasks: Object.fromEntries(tasks.map((task) => [task.id,
       { status: 'pending', phase: 'run', attempts: 0, validationAttempts: 0 }])) };
-  return { root, planFile, protocolFile, stateFile, tasks, sourceFiles: sources.files, sourceHashes: sources.hashes, state, options, timeoutMs };
+  return { root, sharedDataRoot, sharedDataScope: options.sharedDataScope, planFile, protocolFile, stateFile,
+    tasks, sourceFiles: sources.files, sourceHashes: sources.hashes, state, options, timeoutMs };
 }
 
 /** Run the pilot or already-gated formal tasks; pilot returns [], formal returns ordered result paths. */

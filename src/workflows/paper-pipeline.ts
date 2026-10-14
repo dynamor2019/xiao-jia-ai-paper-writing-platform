@@ -23,6 +23,7 @@ import { PAPER_PHASES, paperStages, phaseForStage } from '../../config/dsh/web/p
 import { beginTask, finishTask, canDegradeTask, assertRecoverableContentFailure, resolveTaskMarkers, type ProgressState } from './phase-progress.js';
 import { resultInterpretationInstructions } from './result-interpretation.js';
 import { maintainPipelineArtifacts } from './artifact-inventory.js';
+import { reconcileReproducibilityResult } from './result-artifact.js';
 import { runExperimentPlan, type ExperimentPlan, type ExperimentPlanOptions, type ExperimentPlanCheckpoint } from './experiment-plan.js';
 import { deliveryGateStatuses } from './delivery-gates.js';
 import { pruneOldBackups } from '../lib/backup-retention.js';
@@ -184,6 +185,8 @@ export class PaperPipeline {
   private inputDir?: string;
   private journalProfile?: JournalProfile;
   private outputDir: string;
+  private sharedDataRoot: string;
+  private sharedDataScope: string;
   private stateDir: string;
   private milestoneDir: string;
   private runtimeDir: string;
@@ -205,6 +208,8 @@ export class PaperPipeline {
     this.repairStage = options.repairStage;
     this.inputDir = options.inputDir;
     this.outputDir = normalizeOutputDir(options.outputDir || process.env.PAPER_OUTPUT_DIR || createPaperOutputDir(topic || 'paper', options.paperProjectId));
+    this.sharedDataRoot = resolve(process.env.PAPER_SHARED_DATA_ROOT || join(paperOutputRoot(), 'shared'));
+    this.sharedDataScope = safeFileBase(basename(this.outputDir));
     this.stateDir = join(this.outputDir, '.dsh-state');
     this.milestoneDir = join(this.outputDir, 'milestones');
     this.runtimeDir = join(this.stateDir, 'runtime');
@@ -250,7 +255,7 @@ export class PaperPipeline {
 
   private researchInstructions(): string {
     const sourceScope = canonicalScope(this.outputDir, this.state.sections);
-    if (sourceScope) return [formatJournalInstructions(this.journalProfile), sourceScope, researchInputInstructions(this.outputDir), resultInterpretationInstructions(this.outputDir, this.state.metadata.resultsFile)].filter(Boolean).join('\n\n');
+    if (sourceScope) return [formatJournalInstructions(this.journalProfile), sourceScope, this.sharedDataInstructions(), researchInputInstructions(this.outputDir), resultInterpretationInstructions(this.outputDir, this.state.metadata.resultsFile)].filter(Boolean).join('\n\n');
     const direction = this.state.metadata.researchDirection;
     const controls = [
       direction?.focus && `Core focus and contribution: ${direction.focus}`,
@@ -262,10 +267,21 @@ export class PaperPipeline {
       formatJournalInstructions(this.journalProfile),
       controls.length > 0 ? `Research direction controls:\n${controls.join('\n')}` : '',
       this.topicBoundaryInstructions(),
+      this.sharedDataInstructions(),
       researchInputInstructions(this.outputDir),
       resultInterpretationInstructions(this.outputDir, this.state.metadata.resultsFile),
       integratedProtocol(this.state) && readFileSync(integratedProtocol(this.state)!, 'utf8'),
     ].filter(Boolean).join('\n\n');
+  }
+
+  private sharedDataInstructions(): string {
+    return [
+      `Shared immutable data root: ${this.sharedDataRoot}`,
+      `Paper data scope: ${this.sharedDataScope}`,
+      'Use @shared/datasets/<dataset>/<version>/... for shared source data and bind it in sourceFiles; never copy large source datasets into the paper project.',
+      `Write experiment results under @shared/processed/${this.sharedDataScope}/<unique-run-id>/...; keep scripts, protocol, logs, checkpoints, manuscript and delivery files in the paper project.`,
+      'Use a new run-id for each run; never overwrite another paper/run. Shared data references are hash-checked and symlinks/path traversal are rejected.',
+    ].join('\n');
   }
 
   /** Bind scientific review and revision to the same validated results used for writing. */
@@ -1088,6 +1104,7 @@ export class PaperPipeline {
     const applicable = resolution && (phase === 'pilot' ? resolution.taskId === 'pilot' : resolution.taskId !== 'pilot');
     const paths = await runExperimentPlan({
       projectDir: this.outputDir, phase, planFile: 'milestones/experiment-plan.json',
+      sharedDataRoot: this.sharedDataRoot, sharedDataScope: this.sharedDataScope,
       protocolFile: integratedProtocol(this.state) || 'milestones/analysis-plan.md',
       expectedResearchQuestion: this.loadSelectedTopic()?.researchQuestion,
       resultsFile: this.state.metadata.resultsFile,
@@ -1122,9 +1139,14 @@ export class PaperPipeline {
     if (!result.success || !result.data) throw new Error(result.error || '实验数据未通过验收');
     const resultsFile = this.state.metadata.resultsFile;
     if (resultsFile && existsSync(resolve(resultsFile))) {
-      const resultsDir = join(this.milestoneDir, 'reproducibility', 'results');
-      await mkdir(resultsDir, { recursive: true });
-      await copyFile(resolve(resultsFile), join(resultsDir, safeFileBase(resultsFile)));
+      const outcome = await reconcileReproducibilityResult(this.outputDir, resultsFile, {
+        sharedDataRoot: this.sharedDataRoot, sharedDataScope: this.sharedDataScope,
+      });
+      if (outcome === 'different-copy-retained') {
+        console.warn('[artifact retention] Same-name result copy differed from the validated source; retained without overwrite.');
+      } else if (outcome === 'duplicate-removed') {
+        console.log('[artifact retention] Removed byte-identical result copy; source path and SHA-256 recorded.');
+      }
     }
     console.log(`数据验收: ${result.data}`);
   }

@@ -73,6 +73,7 @@ export function integratedProtocol(state: PipelineState): string | undefined {
 /** Resolve new audit artifacts without overwriting the historical experiment's reports. */
 export function integratedEvidence(state: PipelineState, name: string): string | undefined {
   if (!(state as IntegratedState).experimentIntegration || !state.metadata.resultsFile) return undefined;
+  if (state.metadata.outputDir) return join(state.metadata.outputDir, 'milestones', 'reproducibility', 'independent-audit', name);
   return join(dirname(state.metadata.resultsFile), 'independent-audit', name);
 }
 

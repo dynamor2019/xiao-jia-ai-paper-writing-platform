@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createInitialState } from '../config/dsh.config.js';
-import { integrateExperiment, integratedProtocol } from './experiment-integration.js';
+import { integrateExperiment, integratedEvidence, integratedProtocol } from './experiment-integration.js';
 
 /** Supply current evidence without making model requests or touching user sessions. */
 function fixture() {
@@ -27,6 +27,7 @@ function fixture() {
   state.metadata.originalTopic = 'Original real-source research question';
   state.metadata.experimentCommand = 'python replay.py';
   state.metadata.resultsFile = join(root, 'new-result.json');
+  state.metadata.outputDir = root;
   state.stage = 'quality-validation';
   return { root, state, request: { referenceResult: reference, protocolFile: protocol, reason: 'Restore source experiment' } };
 }
@@ -55,5 +56,13 @@ test('changed source fingerprint rejects integration before archiving any manusc
     assert.throws(() => integrateExperiment(root, state, request), /changed/);
     assert.equal(state.stage, 'quality-validation');
     assert.equal(readFileSync(join(root, '.dsh-state', 'manuscript.md'), 'utf8'), 'Old toy manuscript');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('integrated audit artifacts stay with the paper when experiment results use an external data root', () => {
+  const { root, state } = fixture();
+  try {
+    assert.equal(integratedEvidence(state, 'numerical-audit.json'),
+      join(root, 'milestones', 'reproducibility', 'independent-audit', 'numerical-audit.json'));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

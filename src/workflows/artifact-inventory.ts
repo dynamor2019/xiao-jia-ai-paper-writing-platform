@@ -5,15 +5,22 @@ interface Artifact { path: string; bytes: number; modifiedAt: string; role: stri
 const TEMP_PREFIX = '.dsh-state/runtime/tmp/';
 const TEMP_AGE_MS = 24 * 60 * 60 * 1000;
 const MANIFEST = '.dsh-state/pipeline-artifacts.json';
+const PIPELINE_STATE_PREFIX = '.dsh-state/';
+const RESULT_STAGING_PREFIX = 'milestones/reproducibility/results/';
 
 /** Classify conservatively; unknown files and historical evidence are retained. */
 function artifactRole(path: string): string {
-  if (path.startsWith(TEMP_PREFIX)) return 'temporary';
+  if (path.startsWith(TEMP_PREFIX) || isPipelineStagingFile(path)) return 'temporary';
   if (/archive|ARCHIVE/.test(path)) return 'archive';
   if (/^(experiments|raw|input|data|code)\//.test(path) || /analysis-plan|research-brief|experiment-plan/.test(path)) return 'evidence';
   if (/^(final|delivery|review-draft)\//.test(path)) return 'manuscript';
   if (/^(milestones|\.dsh-state)\//.test(path)) return 'audit';
   return 'unknown';
+}
+
+function isPipelineStagingFile(path: string): boolean {
+  return path.endsWith('.pipeline.tmp')
+    && (path.startsWith(PIPELINE_STATE_PREFIX) || path.startsWith(RESULT_STAGING_PREFIX));
 }
 
 /** Refuse links and paths outside the real project root before considering deletion. */
@@ -41,11 +48,15 @@ async function inventory(root: string, directory = root): Promise<Artifact[]> {
   return rows;
 }
 
-/** Prune only expired disposable .tmp files in the dedicated runtime/tmp directory. */
+/** Prune only expired files created in dedicated pipeline staging locations. */
 async function pruneTemps(root: string, rows: Artifact[]): Promise<string[]> {
   const removed: string[] = [];
-  const candidates = rows.filter((row) => row.path.startsWith(TEMP_PREFIX)
-    && row.path.endsWith('.tmp') && Date.now() - Date.parse(row.modifiedAt) > TEMP_AGE_MS).slice(0, 200);
+  const candidates = rows.filter((row) => {
+    const age = Date.now() - Date.parse(row.modifiedAt);
+    const runtimeTemp = row.path.startsWith(TEMP_PREFIX) && row.path.endsWith('.tmp');
+    const stagedWrite = isPipelineStagingFile(row.path);
+    return (runtimeTemp || stagedWrite) && age > TEMP_AGE_MS;
+  }).slice(0, 200);
   for (const row of candidates) {
     const path = resolve(root, row.path);
     const stat = await lstat(path);

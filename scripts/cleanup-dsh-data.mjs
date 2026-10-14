@@ -1,9 +1,11 @@
 import 'dotenv/config';
 
-import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { lstat, mkdir, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const DEFAULT_DATA_ROOT = join(process.env.USERPROFILE || homedir(), 'Documents', 'XiaoJiaAI Data');
 const DATA_ROOT = resolve(process.env.PAPER_DATA_ROOT || DEFAULT_DATA_ROOT);
@@ -16,44 +18,26 @@ const DEFAULTS = {
   dryRun: true,
   logsDays: 14,
   tempDays: 3,
-  figureScriptDays: 1,
-  failedDays: 21,
-  npmCacheDays: 30,
-  backupFileDays: 7,
-  cacheDays: 30,
-  emptyDirs: true,
+  backupDays: 30,
+  npmCacheDays: null,
+  dedupeExact: false,
 };
 
 const PROTECTED_SEGMENTS = new Set([
-  'final',
-  'milestones',
-  'real_data',
-  'raw',
-  'input',
-  'references',
-  'protected-customizations',
-  'experiments',
-  'delivery',
-  'figures',
-  'code',
+  'final', 'milestones', 'real_data', 'raw', 'input', 'references',
+  'protected-customizations', 'experiments', 'delivery', 'figures', 'code',
 ]);
-
-const FIGURE_VARIANT_RE = /^(?:_?fix\d*|fix_.+|batch_fix_.+|generate_all_fixed|generate_final_figures(?:_fixed)?|generate_top_tier_.+|generate_ultra_.+|adjust_commodity_.+|generate_(?:aic_)?figure\d+_.+|make_figures)\.py$/i;
-const CANONICAL_VARIANT_RE = /(?:^|[_-])(?:new|fixed|fix|final|v\d+|revised|polished|clean|complete|latest|best)(?:[_-]|\.)/i;
 
 function parseArgs(argv) {
   const options = { ...DEFAULTS };
   for (const arg of argv) {
     if (arg === '--apply') options.dryRun = false;
     else if (arg === '--dry-run') options.dryRun = true;
-    else if (arg === '--no-empty-dirs') options.emptyDirs = false;
     else if (arg.startsWith('--logs-days=')) options.logsDays = Number(arg.split('=')[1]);
     else if (arg.startsWith('--temp-days=')) options.tempDays = Number(arg.split('=')[1]);
-    else if (arg.startsWith('--figure-script-days=')) options.figureScriptDays = Number(arg.split('=')[1]);
-    else if (arg.startsWith('--failed-days=')) options.failedDays = Number(arg.split('=')[1]);
+    else if (arg.startsWith('--backup-days=')) options.backupDays = Number(arg.split('=')[1]);
     else if (arg.startsWith('--npm-cache-days=')) options.npmCacheDays = Number(arg.split('=')[1]);
-    else if (arg.startsWith('--backup-file-days=')) options.backupFileDays = Number(arg.split('=')[1]);
-    else if (arg.startsWith('--cache-days=')) options.cacheDays = Number(arg.split('=')[1]);
+    else if (arg === '--dedupe-exact') options.dedupeExact = true;
     else throw new Error(`Unknown cleanup option: ${arg}`);
   }
   return options;
@@ -64,57 +48,123 @@ function olderThan(pathStat, days) {
 }
 
 function hasProtectedSegment(path) {
-  return path.split(/[\\/]+/).some((segment) => PROTECTED_SEGMENTS.has(segment));
+  return path.split(/[\\/]+/).some((segment) => PROTECTED_SEGMENTS.has(segment)
+    || /^archive(?:s|[_-].*)?$/i.test(segment));
 }
 
-async function walk(root, visitor) {
+async function isInside(root, path) {
+  let actualRoot;
+  let actualPath;
+  try {
+    [actualRoot, actualPath] = await Promise.all([realpath(root), realpath(path)]);
+  } catch {
+    return false;
+  }
+  const rel = relative(actualRoot, actualPath);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+async function walk(root, visitor, skippedDirectories = new Set(), rootValidated = false) {
   if (!existsSync(root)) return;
+  const rootInfo = await lstat(root);
+  if (rootInfo.isSymbolicLink() || (!rootValidated && !await isInside(DATA_ROOT, root))) return;
   const entries = await readdir(root, { withFileTypes: true });
   for (const entry of entries) {
+    if (entry.isDirectory() && skippedDirectories.has(entry.name.toLowerCase())) continue;
     const fullPath = join(root, entry.name);
-    if (entry.isDirectory()) {
-      await walk(fullPath, visitor);
-      await visitor(fullPath, entry, true);
-    } else if (entry.isFile()) {
+    const info = await lstat(fullPath);
+    if (info.isSymbolicLink()) continue;
+    if (info.isDirectory()) {
+      await walk(fullPath, visitor, skippedDirectories, true);
+    } else if (info.isFile()) {
       await visitor(fullPath, entry, false);
     }
   }
 }
 
-async function addFileMatches(actions, root, predicate, reason) {
+async function addFileMatches(actions, root, predicate, reason, skippedDirectories = new Set()) {
   await walk(root, async (path, _entry, isDirectory) => {
     if (isDirectory) return;
-    const pathStat = await stat(path);
-    if (!await predicate(path, pathStat)) return;
+    const pathStat = await lstat(path);
+    if (!pathStat.isFile() || pathStat.isSymbolicLink() || !await predicate(path, pathStat)
+      || !await isInside(DATA_ROOT, path)) return;
     actions.push({
       type: 'file',
       path,
       bytes: pathStat.size,
       reason,
     });
-  });
+  }, skippedDirectories);
 }
 
-async function addDirectoryMatches(actions, root, predicate, reason) {
+async function addExpiredBackupMatches(actions, root, maxAgeDays) {
+  const groups = new Map();
   await walk(root, async (path, _entry, isDirectory) => {
-    if (!isDirectory) return;
-    const pathStat = await stat(path);
-    if (!await predicate(path, pathStat)) return;
-    actions.push({
-      type: 'directory',
-      path,
-      bytes: 0,
-      reason,
-    });
+    if (isDirectory || hasProtectedSegment(path)) return;
+    const match = basename(path).match(/^(.+)\.before-[^/\\]+\.bak$/i);
+    if (!match) return;
+    const pathStat = await lstat(path);
+    if (!pathStat.isFile() || pathStat.isSymbolicLink() || !await isInside(DATA_ROOT, path)) return;
+    const key = `${dirname(path).toLowerCase()}\\${match[1].toLowerCase()}`;
+    const files = groups.get(key) || [];
+    files.push({ path, bytes: pathStat.size, modifiedAt: pathStat.mtimeMs });
+    groups.set(key, files);
   });
+  for (const files of groups.values()) {
+    files.sort((left, right) => right.modifiedAt - left.modifiedAt);
+    for (const file of files.slice(3)) {
+      if (NOW - file.modifiedAt <= maxAgeDays * DAY_MS) continue;
+      actions.push({
+        type: 'file', path: file.path, bytes: file.bytes,
+        reason: `superseded managed backup older than ${maxAgeDays} days; newest three retained`,
+      });
+    }
+  }
 }
 
-async function isEmptyDirectory(path) {
-  try {
-    const entries = await readdir(path);
-    return entries.length === 0;
-  } catch {
-    return false;
+async function hashFile(path) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+async function addExactArchiveDuplicateMatches(actions, papersRoot) {
+  const groups = new Map();
+  await walk(papersRoot, async (path, _entry, isDirectory) => {
+    if (isDirectory) return;
+    const relativePath = relative(DATA_ROOT, path).split(sep);
+    const archiveIndex = relativePath.findIndex((part) => part.toLowerCase() === 'archive_work_files');
+    if (archiveIndex < 0) return;
+    const archiveRelative = relativePath.slice(archiveIndex + 1).join('/').toLowerCase();
+    const isResult = archiveRelative.includes('/experiments/')
+      || archiveRelative.startsWith('experiments/')
+      || archiveRelative.includes('/milestones/reproducibility/results/')
+      || archiveRelative.startsWith('milestones/reproducibility/results/');
+    const extension = extname(path).toLowerCase();
+    if (!isResult || !['.json', '.csv', '.tsv'].includes(extension)) return;
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.size < 1024 * 1024 || !await isInside(DATA_ROOT, path)) return;
+    const digest = await hashFile(path);
+    const archiveRoot = relativePath.slice(0, archiveIndex + 1).join(sep).toLowerCase();
+    const key = `${archiveRoot}|${basename(path).toLowerCase()}|${info.size}|${digest}`;
+    const group = groups.get(key) || [];
+    group.push({ path, bytes: info.size, digest, archiveRelative });
+    groups.set(key, group);
+  });
+
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    group.sort((left, right) => {
+      const leftRank = left.archiveRelative.includes('/experiments/results/') || left.archiveRelative.startsWith('experiments/results/') ? 0 : 1;
+      const rightRank = right.archiveRelative.includes('/experiments/results/') || right.archiveRelative.startsWith('experiments/results/') ? 0 : 1;
+      return leftRank - rightRank || left.path.localeCompare(right.path);
+    });
+    const retained = group[0];
+    for (const duplicate of group.slice(1)) actions.push({
+      type: 'file', path: duplicate.path, bytes: duplicate.bytes,
+      sha256: duplicate.digest, retainedPath: retained.path,
+      reason: 'byte-identical archived experiment result; canonical copy retained (requires --dedupe-exact --apply)',
+    });
   }
 }
 
@@ -125,6 +175,7 @@ async function buildPlan(options) {
     STATE_ROOT,
     (path, pathStat) => /\.(log|tmp|temp)$/i.test(path) && olderThan(pathStat, options.logsDays),
     `state log/tmp older than ${options.logsDays} days`,
+    new Set(['npm-cache', 'pip-cache', 'tmp', 'cleanup-reports']),
   );
   await addFileMatches(
     actions,
@@ -132,119 +183,35 @@ async function buildPlan(options) {
     (_path, pathStat) => olderThan(pathStat, options.tempDays),
     `state tmp older than ${options.tempDays} days`,
   );
-  await addFileMatches(
-    actions,
-    join(STATE_ROOT, 'npm-cache'),
-    (_path, pathStat) => olderThan(pathStat, options.npmCacheDays),
-    `npm cache older than ${options.npmCacheDays} days`,
-  );
-  await addDirectoryMatches(
-    actions,
-    join(DATA_ROOT, 'output', 'papers', '_failed-attempts'),
-    (_path, pathStat) => olderThan(pathStat, options.failedDays),
-    `failed attempts older than ${options.failedDays} days`,
-  );
-
+  if (options.npmCacheDays !== null) {
+    await addFileMatches(
+      actions,
+      join(STATE_ROOT, 'npm-cache'),
+      (_path, pathStat) => olderThan(pathStat, options.npmCacheDays),
+      `npm cache older than ${options.npmCacheDays} days`,
+    );
+  }
   const papersRoot = join(DATA_ROOT, 'output', 'papers');
   await addFileMatches(
     actions,
     papersRoot,
-    (path, pathStat) => {
-      if (hasProtectedSegment(path)) return false;
-      if (!olderThan(pathStat, options.figureScriptDays)) return false;
-      return /\.(tmp|temp|old|part|crdownload|pyc)$/i.test(path)
-        || /[\\/](_temp|tmp|temp|logs?)[\\/]/i.test(path)
-        || /[\\.]dsh-state[\\/].+\.(log|tmp|temp)$/i.test(path);
-    },
-    `paper transient file older than ${options.tempDays} days`,
+    (path, pathStat) => (/[\\/]\.dsh-state[\\/].+\.pipeline\.tmp$/i.test(path)
+      || /[\\/]milestones[\\/]reproducibility[\\/]results[\\/].+\.pipeline\.tmp$/i.test(path))
+      && olderThan(pathStat, options.tempDays),
+    `pipeline staging file older than ${options.tempDays} days`,
   );
-  await addFileMatches(
-    actions,
-    papersRoot,
-    (path, pathStat) => {
-      if (hasProtectedSegment(path)) return false;
-      if (!olderThan(pathStat, options.backupFileDays)) return false;
-      return /\.bak$/i.test(path) || /\.before-[^/\\]+\.bak$/i.test(path);
-    },
-    `backup file older than ${options.backupFileDays} days`,
-  );
-  await addDirectoryMatches(
-    actions,
-    papersRoot,
-    (path, pathStat) => {
-      if (hasProtectedSegment(path)) return false;
-      if (!olderThan(pathStat, options.tempDays)) return false;
-      const name = basename(path);
-      return /^qa-gate-\d+(?:-layout|-layout-final|-final-check)$/i.test(name)
-        || /^qa-result-led-\d{8}$/i.test(name)
-        || name === 'cleanup-archive';
-    },
-    `superseded QA directory older than ${options.tempDays} days`,
-  );
-  await addDirectoryMatches(
-    actions,
-    papersRoot,
-    async (path, pathStat) => {
-      if (hasProtectedSegment(path)) return false;
-      if (!olderThan(pathStat, options.cacheDays)) return false;
-      const name = basename(path);
-      return /^(?:architecture|network-interface|parameter|AHU-neighborhood|manufacturer)-cache$/i.test(name)
-        || name === 'citation-recovery';
-    },
-    `cache directory older than ${options.cacheDays} days`,
-  );
-  await addFileMatches(
-    actions,
-    join(DATA_ROOT, 'output'),
-    (path, pathStat) => {
-      if (!olderThan(pathStat, options.figureScriptDays)) return false;
-      if (hasProtectedSegment(path)) return false;
-      const relativePath = relative(join(DATA_ROOT, 'output'), path);
-      const isRootPython = !relativePath.includes('\\') && !relativePath.includes('/') && path.toLowerCase().endsWith('.py');
-      return isRootPython || FIGURE_VARIANT_RE.test(basename(path));
-    },
-    `non-canonical figure/root python script older than ${options.figureScriptDays} days`,
-  );
-  await addFileMatches(
-    actions,
-    papersRoot,
-    (path, pathStat) => {
-      if (!olderThan(pathStat, options.figureScriptDays)) return false;
-      if (hasProtectedSegment(path)) return false;
-      if (!CANONICAL_VARIANT_RE.test(basename(path))) return false;
-      return /\.(md|docx|tex|bib|csv|tsv|json|py|png|pdf)$/i.test(path);
-    },
-    `non-canonical variant file older than ${options.figureScriptDays} days`,
-  );
-  await addDirectoryMatches(
-    actions,
-    papersRoot,
-    (path, pathStat) => {
-      if (hasProtectedSegment(path)) return false;
-      if (!olderThan(pathStat, options.tempDays)) return false;
-      return /[\\/](_temp|tmp|temp|logs?)[\\/]?$/i.test(path);
-    },
-    `paper transient directory older than ${options.tempDays} days`,
-  );
-
-  if (options.emptyDirs) {
-    await addDirectoryMatches(
-      actions,
-      papersRoot,
-      async (path) => !hasProtectedSegment(path) && await isEmptyDirectory(path),
-      'empty paper directory',
-    );
-  }
+  await addExpiredBackupMatches(actions, papersRoot, options.backupDays);
+  if (options.dedupeExact) await addExactArchiveDuplicateMatches(actions, papersRoot);
 
   const seen = new Set();
-  return actions
-    .filter((action) => {
-      const key = `${action.type}:${action.path}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return resolve(action.path).startsWith(DATA_ROOT);
-    })
-    .sort((left, right) => right.path.length - left.path.length);
+  const safeActions = [];
+  for (const action of actions) {
+    const key = `${action.type}:${action.path}`;
+    if (seen.has(key) || !await isInside(DATA_ROOT, action.path)) continue;
+    seen.add(key);
+    safeActions.push(action);
+  }
+  return safeActions.sort((left, right) => right.path.length - left.path.length);
 }
 
 async function applyPlan(actions, dryRun) {
@@ -252,6 +219,8 @@ async function applyPlan(actions, dryRun) {
   let removedItems = 0;
   for (const action of actions) {
     if (dryRun) continue;
+    const current = await lstat(action.path);
+    if (!current.isFile() || current.isSymbolicLink() || !await isInside(DATA_ROOT, action.path)) continue;
     await rm(action.path, { recursive: action.type === 'directory', force: true });
     removedItems += 1;
     removedBytes += action.bytes;
@@ -268,6 +237,7 @@ function formatBytes(bytes) {
 
 async function writeReport(options, actions, result) {
   await mkdir(REPORT_DIR, { recursive: true });
+  if (!await isInside(DATA_ROOT, REPORT_DIR)) throw new Error('Cleanup report directory resolves outside the data root');
   const totalBytes = actions.reduce((sum, action) => sum + action.bytes, 0);
   const payload = {
     createdAt: new Date().toISOString(),
@@ -279,7 +249,8 @@ async function writeReport(options, actions, result) {
     removedBytes: result.removedBytes,
     actions: actions.map((action) => ({
       ...action,
-      path: relative(DATA_ROOT, action.path),
+      path: relative(DATA_ROOT, action.path).split(sep).join('/'),
+      ...(action.retainedPath ? { retainedPath: relative(DATA_ROOT, action.retainedPath).split(sep).join('/') } : {}),
     })),
   };
   const reportPath = join(REPORT_DIR, `cleanup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
@@ -297,3 +268,4 @@ console.log(`Candidates: ${plan.length}, reclaimable: ${formatBytes(totalBytes)}
 console.log(`Removed: ${result.removedItems}, reclaimed: ${formatBytes(result.removedBytes)}`);
 console.log(`Report: ${reportPath}`);
 if (options.dryRun) console.log('Run npm run cleanup:apply to delete these low-risk files.');
+if (options.dryRun && options.dedupeExact) console.log('Exact archive duplicates require: node scripts/cleanup-dsh-data.mjs --dedupe-exact --apply');

@@ -208,6 +208,64 @@ test('pilot and formal results reject raw/input/archive outputs without overwrit
   assert.equal(existsSync(f.stateFile), false);
 });
 
+test('shared immutable datasets and paper-scoped processed outputs stay outside the paper project', async (t) => {
+  const f = fixture(t, 1);
+  const sharedRoot = mkdtempSync(join(tmpdir(), 'dsh-shared-data-'));
+  t.after(() => rmSync(sharedRoot, { recursive: true, force: true }));
+  const sourceFile = join(sharedRoot, 'datasets', 'sample', 'v1', 'source.csv');
+  mkdirSync(dirname(sourceFile), { recursive: true });
+  writeFileSync(sourceFile, 'x,y\n1,2\n');
+  const resultRef = '@shared/processed/paper-case/run-001/result.json';
+  const providedPlan: ExperimentPlan = { schemaVersion: 1, executionMode: 'provided-data', researchQuestion: f.plan.researchQuestion,
+    originalHypothesis: f.plan.originalHypothesis, sourceFiles: ['@shared/datasets/sample/v1/source.csv'],
+    batches: [{ id: 'batch-1', command: 'explicit-batch-1 --seed 7', resultsFile: resultRef, question: 'Analyze provided data' }] };
+  writeFileSync(f.planFile, JSON.stringify(providedPlan));
+
+  const paths = await runExperimentPlan({ ...f.options, phase: 'formal', sharedDataRoot: sharedRoot,
+    sharedDataScope: 'paper-case', resultsFile: resultRef });
+  const expectedResult = join(realpathSync.native(sharedRoot), 'processed', 'paper-case', 'run-001', 'result.json');
+  assert.deepEqual(paths, [expectedResult]);
+  assert.equal(existsSync(expectedResult), true);
+  assert.equal(existsSync(join(f.root, 'experiments', 'results', 'batch-1.json')), false);
+  assert.equal(f.runs[0].resultsFile, expectedResult);
+  const checkpoint = read_state(f.stateFile);
+  assert.ok(Object.values(checkpoint.sourceHashes || {}).includes(createHash('sha256').update('x,y\n1,2\n').digest('hex')));
+});
+
+test('shared experiment output cannot escape its paper scope or data namespace', async (t) => {
+  const f = fixture(t, 1);
+  const sharedRoot = mkdtempSync(join(tmpdir(), 'dsh-shared-data-'));
+  t.after(() => rmSync(sharedRoot, { recursive: true, force: true }));
+  for (const resultsFile of ['@shared/processed/another-paper/run/result.json', '@shared/datasets/sample/result.json',
+    '@shared/processed/paper-case/../../outside.json']) {
+    f.plan.batches[0].resultsFile = resultsFile;
+    writeFileSync(f.planFile, JSON.stringify(f.plan));
+    await assert.rejects(runExperimentPlan({ ...f.options, sharedDataRoot: sharedRoot, sharedDataScope: 'paper-case' }), /paper-scope|Invalid shared data path|approved namespace/);
+  }
+  assert.equal(f.runs.length, 0);
+});
+
+test('shared run IDs cannot overwrite an existing processed result', async (t) => {
+  const f = fixture(t, 1);
+  const sharedRoot = mkdtempSync(join(tmpdir(), 'dsh-shared-data-'));
+  t.after(() => rmSync(sharedRoot, { recursive: true, force: true }));
+  const sourceFile = join(sharedRoot, 'datasets', 'sample', 'v1', 'source.csv');
+  const resultRef = '@shared/processed/paper-case/run-001/result.json';
+  const existingResult = join(sharedRoot, 'processed', 'paper-case', 'run-001', 'result.json');
+  mkdirSync(dirname(sourceFile), { recursive: true });
+  mkdirSync(dirname(existingResult), { recursive: true });
+  writeFileSync(sourceFile, 'x,y\n1,2\n');
+  writeFileSync(existingResult, 'preserve this completed run');
+  const plan: ExperimentPlan = { schemaVersion: 1, executionMode: 'provided-data', researchQuestion: f.plan.researchQuestion,
+    originalHypothesis: f.plan.originalHypothesis, sourceFiles: ['@shared/datasets/sample/v1/source.csv'],
+    batches: [{ id: 'batch-1', command: 'explicit-batch-1 --seed 7', resultsFile: resultRef, question: 'Analyze data' }] };
+  writeFileSync(f.planFile, JSON.stringify(plan));
+  await assert.rejects(runExperimentPlan({ ...f.options, phase: 'formal', sharedDataRoot: sharedRoot,
+    sharedDataScope: 'paper-case', resultsFile: resultRef }), (error: unknown) => error instanceof ExperimentPlanError && error.code === 'output-collision');
+  assert.equal(readFileSync(existingResult, 'utf8'), 'preserve this completed run');
+  assert.equal(f.runs.length, 0);
+});
+
 test('symlink/junction escapes and hardlinked outputs are rejected without changing targets', async (t) => {
   const f = fixture(t);
   const external = mkdtempSync(join(tmpdir(), 'dsh-experiment-outside-'));

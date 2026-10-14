@@ -132,7 +132,7 @@ export async function createResearchProtocol(topic: string, papers: Paper[], not
 }
 
 /** Run an explicitly supplied experiment command and preserve its complete audit log. */
-export async function runExperiment(command: string, outputDir = DEFAULT_OUTPUT_DIR, resultsFile?: string, options: { cwd?: string; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ToolResult<string>> {
+export async function runExperiment(command: string, outputDir = DEFAULT_OUTPUT_DIR, resultsFile?: string, options: { cwd?: string; timeoutMs?: number; signal?: AbortSignal; sharedDataRoot?: string } = {}): Promise<ToolResult<string>> {
   if (!command.trim()) return { success: false, error: '未配置实验命令；请使用 --experiment-command 提供可复现的程序入口' };
   try {
     const resolvedOutputDir = resolve(outputDir);
@@ -140,6 +140,8 @@ export async function runExperiment(command: string, outputDir = DEFAULT_OUTPUT_
     const startedAt = new Date().toISOString();
     const { stdout, stderr } = await execAsync(command, {
       cwd: options.cwd || process.cwd(),
+      env: { ...process.env, PAPER_SHARED_DATA_ROOT: options.sharedDataRoot || process.env.PAPER_SHARED_DATA_ROOT || '',
+        DSH_RESULTS_FILE: resultsFile ? resolve(resultsFile) : '', DSH_EXPERIMENT_OUTPUT_DIR: resolvedOutputDir },
       timeout: options.timeoutMs ?? Number(process.env.EXPERIMENT_TIMEOUT_MS || 3_600_000),
       signal: options.signal,
       maxBuffer: 100 * 1024 * 1024,
