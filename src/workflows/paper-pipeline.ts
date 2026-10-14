@@ -1144,6 +1144,8 @@ export class PaperPipeline {
       });
       if (outcome === 'different-copy-retained') {
         console.warn('[artifact retention] Same-name result copy differed from the validated source; retained without overwrite.');
+      } else if (outcome === 'different-copy-archived') {
+        console.log('[artifact retention] Different prior result moved to reproducibility/results/superseded and hash recorded.');
       } else if (outcome === 'duplicate-removed') {
         console.log('[artifact retention] Removed byte-identical result copy; source path and SHA-256 recorded.');
       }

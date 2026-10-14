@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import test from 'node:test';
 import { reconcileReproducibilityResult } from './result-artifact.js';
 
@@ -25,8 +26,12 @@ test('reproducibility manifest replaces only a byte-identical generated result c
     assert.match(manifest.sha256, /^[a-f0-9]{64}$/);
 
     await writeFile(copy, 'different historical content');
-    assert.equal(await reconcileReproducibilityResult(root, source), 'different-copy-retained');
-    assert.equal(await readFile(copy, 'utf8'), 'different historical content');
+    assert.equal(await reconcileReproducibilityResult(root, source), 'different-copy-archived');
+    const historyPath = join(directory, 'superseded', `result.csv.${createHash('sha256').update('different historical content').digest('hex')}.superseded`);
+    assert.equal(await readFile(historyPath, 'utf8'), 'different historical content');
+    assert.equal(await stat(copy).catch(() => null), null);
+    const updatedManifest = JSON.parse(await readFile(join(directory, 'source-manifest.json'), 'utf8'));
+    assert.equal(updatedManifest.supersededCopies[0].path, `milestones/reproducibility/results/superseded/${basename(historyPath)}`);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -22,7 +22,7 @@ export async function reconcileReproducibilityResult(
   projectDir: string,
   resultFile: string,
   shared?: SharedResultLocation,
-): Promise<'duplicate-removed' | 'different-copy-retained' | 'no-copy'> {
+): Promise<'duplicate-removed' | 'different-copy-archived' | 'different-copy-retained' | 'no-copy'> {
   const root = await realpath(projectDir);
   const sourcePath = resolve(root, resultFile);
   const sourceStat = await lstat(sourcePath);
@@ -56,7 +56,8 @@ export async function reconcileReproducibilityResult(
   const fileName = basename(sourcePath).replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').slice(0, 120).replace(/[. ]+$/, '') || 'paper';
   const duplicatePath = join(resultsDir, fileName);
   let duplicateToRemove: string | undefined;
-  let outcome: 'duplicate-removed' | 'different-copy-retained' | 'no-copy' = 'no-copy';
+  let differentCopy: { path: string; sha256: string; bytes: number } | undefined;
+  let outcome: 'duplicate-removed' | 'different-copy-archived' | 'different-copy-retained' | 'no-copy' = 'no-copy';
   const manifestPath = join(resultsDir, 'source-manifest.json');
   if (resolve(duplicatePath) !== resolve(sourcePath) && resolve(duplicatePath) !== resolve(manifestPath)) {
     const duplicateStat = await lstat(duplicatePath).catch(() => undefined);
@@ -69,7 +70,14 @@ export async function reconcileReproducibilityResult(
         }
         duplicateToRemove = duplicatePath;
         outcome = 'duplicate-removed';
-      } else outcome = 'different-copy-retained';
+      } else {
+        const afterHash = await lstat(duplicatePath);
+        if (afterHash.size !== duplicateStat.size || afterHash.mtimeMs !== duplicateStat.mtimeMs) {
+          throw new Error('Reproducibility result copy changed while its hash was computed');
+        }
+        differentCopy = { path: duplicatePath, sha256: await sha256(duplicatePath), bytes: afterHash.size };
+        outcome = 'different-copy-retained';
+      }
     }
   }
 
@@ -79,12 +87,41 @@ export async function reconcileReproducibilityResult(
     const prior = JSON.parse(await readFile(manifestPath, 'utf8'));
     if (prior.managedBy !== MANAGED_BY) throw new Error('Refusing to overwrite a non-pipeline reproducibility manifest');
   }
+  let supersededCopies: Array<{ path: string; sha256: string; bytes: number }> = [];
+  if (existing?.isFile()) {
+    const prior = JSON.parse(await readFile(manifestPath, 'utf8'));
+    if (Array.isArray(prior.supersededCopies)) supersededCopies = prior.supersededCopies;
+  }
+  if (differentCopy) {
+    try {
+      const historyDir = join(resultsDir, 'superseded');
+      await mkdir(historyDir, { recursive: true });
+      if ((await lstat(historyDir)).isSymbolicLink() || !isWithin(root, await realpath(historyDir))) {
+        throw new Error('Superseded result directory resolves outside the paper project');
+      }
+      const historyPath = join(historyDir, `${fileName}.${differentCopy.sha256}.superseded`);
+      const priorHistory = await lstat(historyPath).catch(() => undefined);
+      if (priorHistory?.isSymbolicLink()) throw new Error('Refusing to overwrite a linked superseded result');
+      if (priorHistory?.isFile()) {
+        if (await sha256(historyPath) !== differentCopy.sha256) throw new Error('Superseded result hash path contains different bytes');
+        await unlink(differentCopy.path);
+        outcome = 'duplicate-removed';
+      } else {
+        await rename(differentCopy.path, historyPath);
+        supersededCopies.push({ ...differentCopy, path: relative(root, historyPath).split(sep).join('/') });
+        outcome = 'different-copy-archived';
+      }
+    } catch {
+      outcome = 'different-copy-retained';
+    }
+  }
   const manifest = {
     schemaVersion: 1,
     managedBy: MANAGED_BY,
     sourcePath: manifestSourcePath,
     sha256: sourceHash,
     bytes: sourceAfterHash.size,
+    supersededCopies,
     updatedAt: new Date().toISOString(),
   };
   const temporaryPath = `${manifestPath}.${randomUUID()}.pipeline.tmp`;

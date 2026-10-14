@@ -52,5 +52,6 @@ Author-approved `continue_paper_workflow` action `repair-gate` rechecks one cita
 
 `.dsh-state/pipeline-artifacts.json` records paths, sizes, roles and retention decisions at phase boundaries.
 Raw inputs, code, results, manuscripts, checkpoints, logs, archives and unknown files are retained.
+Validated experiment outputs live in the shared processed-data area when configured; the paper stores a URI/hash manifest instead of a second large copy. A byte-identical generated copy is removed only after hash verification. A same-name copy with different bytes is moved to `milestones/reproducibility/results/superseded/` with its SHA-256 recorded, so it cannot be mistaken for the current validated result and remains recoverable.
 Only ordinary `.tmp` files older than 24 hours under `.dsh-state/runtime/tmp/` are automatically removed, at most 200 per check.
 Fresh temporary files over 64 MiB produce a warning. `npm run cleanup` previews low-risk expired logs, temporary files and superseded managed backups; `npm run cleanup:apply` applies that plan. `npm run cleanup:dedupe` separately previews large byte-identical files inside `ARCHIVE_WORK_FILES`, and `npm run cleanup:dedupe:apply` removes only exact duplicates while retaining one hash-verified copy. Archives with different bytes, source datasets, results and current deliverables are never removed by dedupe.
