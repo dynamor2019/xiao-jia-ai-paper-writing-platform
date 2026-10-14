@@ -348,7 +348,14 @@ async function collectFiles(dir, root = dir) {
   const rows = await Promise.all(entries.map(async (entry) => {
     if (entry.name === '.dsh-state') return [];
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) return collectFiles(path, root);
+    if (entry.isDirectory()) {
+      const relativeSegments = relative(root, path).split(sep).map((segment) => segment.toLowerCase());
+      const isArchived = entry.name.toLowerCase() === 'archive_work_files';
+      const isSuperseded = relativeSegments.some((_, index) =>
+        relativeSegments.slice(index, index + 5).join('/') === 'milestones/reproducibility/results/superseded');
+      if (isArchived || isSuperseded) return [];
+      return collectFiles(path, root);
+    }
     const info = await stat(path);
     return [{ file: path.slice(root.length + 1), path, modifiedAt: info.mtimeMs, size: info.size }];
   }));

@@ -191,6 +191,45 @@ test('paper pipeline binds an explicit project directory and leaves existing fil
   }
 });
 
+test('paper artifact listing excludes archived and superseded files', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-artifact-archive-'));
+  const outputDir = join(root, 'output', 'paper-projects', 'paper-session-artifact-archive');
+  const runDir = join(root, '.dsh-state', 'paper-runs');
+  const previousRoot = process.env.PAPER_DATA_ROOT;
+  const previousProject = process.env.DSH_PAPER_PROJECT_DIR;
+  try {
+    process.env.PAPER_DATA_ROOT = root;
+    process.env.DSH_PAPER_PROJECT_DIR = root;
+    await mkdir(join(outputDir, 'ARCHIVE_WORK_FILES'), { recursive: true });
+    await mkdir(join(outputDir, 'milestones', 'reproducibility', 'results', 'superseded'), { recursive: true });
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(outputDir, 'manuscript.md'), 'current manuscript');
+    await writeFile(join(outputDir, 'ARCHIVE_WORK_FILES', 'old-manuscript.md'), 'archived manuscript');
+    await writeFile(join(outputDir, 'milestones', 'reproducibility', 'results', 'superseded', 'old-result.json'), '{}');
+    await writeFile(join(runDir, 'session-artifact-archive.json'), JSON.stringify({ outputDir }));
+
+    const { apply } = await import(`../config/dsh/web/paper-command.js?artifact-archive=${Date.now()}`);
+    const commands = new Map();
+    apply({
+      commands: { register: (command) => commands.set(command.name, command) },
+      tools: { register: () => {} },
+      goals: { get: () => undefined },
+      systemPrompt: { context: () => {} },
+      effect: () => {},
+    });
+
+    const result = await commands.get('paper-artifacts').handler({ agent: { id: 'session-artifact-archive' } });
+    assert.match(result.text, /manuscript\.md/);
+    assert.doesNotMatch(result.text, /old-manuscript|old-result/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.PAPER_DATA_ROOT;
+    else process.env.PAPER_DATA_ROOT = previousRoot;
+    if (previousProject === undefined) delete process.env.DSH_PAPER_PROJECT_DIR;
+    else process.env.DSH_PAPER_PROJECT_DIR = previousProject;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('workflow continuation reconciles stale Web state and resumes the same failed checkpoint', async () => {
   const root = await mkdtemp(join(tmpdir(), 'xiaojia-paper-reconcile-'));
   const outputDir = join(root, 'output', 'paper-projects', 'paper-session-recovery');
