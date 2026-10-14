@@ -136,17 +136,11 @@ async function addExactArchiveDuplicateMatches(actions, papersRoot) {
     const archiveIndex = relativePath.findIndex((part) => part.toLowerCase() === 'archive_work_files');
     if (archiveIndex < 0) return;
     const archiveRelative = relativePath.slice(archiveIndex + 1).join('/').toLowerCase();
-    const isResult = archiveRelative.includes('/experiments/')
-      || archiveRelative.startsWith('experiments/')
-      || archiveRelative.includes('/milestones/reproducibility/results/')
-      || archiveRelative.startsWith('milestones/reproducibility/results/');
-    const extension = extname(path).toLowerCase();
-    if (!isResult || !['.json', '.csv', '.tsv'].includes(extension)) return;
     const info = await lstat(path);
     if (!info.isFile() || info.isSymbolicLink() || info.size < 1024 * 1024 || !await isInside(DATA_ROOT, path)) return;
     const digest = await hashFile(path);
     const archiveRoot = relativePath.slice(0, archiveIndex + 1).join(sep).toLowerCase();
-    const key = `${archiveRoot}|${basename(path).toLowerCase()}|${info.size}|${digest}`;
+    const key = `${archiveRoot}|${basename(path).toLowerCase()}|${extname(path).toLowerCase()}|${info.size}|${digest}`;
     const group = groups.get(key) || [];
     group.push({ path, bytes: info.size, digest, archiveRelative });
     groups.set(key, group);
@@ -163,7 +157,7 @@ async function addExactArchiveDuplicateMatches(actions, papersRoot) {
     for (const duplicate of group.slice(1)) actions.push({
       type: 'file', path: duplicate.path, bytes: duplicate.bytes,
       sha256: duplicate.digest, retainedPath: retained.path,
-      reason: 'byte-identical archived experiment result; canonical copy retained (requires --dedupe-exact --apply)',
+      reason: 'byte-identical archived artifact; canonical copy retained (requires --dedupe-exact --apply)',
     });
   }
 }

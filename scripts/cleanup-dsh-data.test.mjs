@@ -71,7 +71,12 @@ test('exact archive dedupe is opt-in and retains one byte-identical result', asy
     const canonical = 'output/papers/paper-a/ARCHIVE_WORK_FILES/experiments/results/run-a/result.json';
     const duplicate = 'output/papers/paper-a/ARCHIVE_WORK_FILES/experiments/results/run-b/result.json';
     const different = 'output/papers/paper-a/ARCHIVE_WORK_FILES/experiments/results/run-c/result.json';
-    for (const [file, bytes] of [[canonical, content], [duplicate, content], [different, Buffer.alloc(content.length, 8)]]) {
+    const archiveCopy = 'output/papers/paper-a/ARCHIVE_WORK_FILES/delivery/archive-a/support.zip';
+    const duplicateArchiveCopy = 'output/papers/paper-a/ARCHIVE_WORK_FILES/delivery/archive-b/support.zip';
+    for (const [file, bytes] of [
+      [canonical, content], [duplicate, content], [different, Buffer.alloc(content.length, 8)],
+      [archiveCopy, content], [duplicateArchiveCopy, content],
+    ]) {
       const path = join(dataRoot, file);
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, bytes);
@@ -85,10 +90,12 @@ test('exact archive dedupe is opt-in and retains one byte-identical result', asy
 
     const reports = await readdir(join(dataRoot, '.dsh-state', 'cleanup-reports'));
     const report = JSON.parse(await readFile(join(dataRoot, '.dsh-state', 'cleanup-reports', reports[0]), 'utf8'));
-    assert.equal(report.candidateItems, 1);
-    assert.equal(report.actions[0].sha256, createHash('sha256').update(content).digest('hex'));
-    assert.equal(report.actions[0].retainedPath, canonical);
-    assert.equal(report.actions[0].path, duplicate);
+    assert.equal(report.candidateItems, 2);
+    const resultAction = report.actions.find((action) => action.path === duplicate);
+    const archiveAction = report.actions.find((action) => action.path === duplicateArchiveCopy);
+    assert.equal(resultAction.sha256, createHash('sha256').update(content).digest('hex'));
+    assert.equal(resultAction.retainedPath, canonical);
+    assert.equal(archiveAction.retainedPath, archiveCopy);
 
     const applied = spawnSync(process.execPath, ['scripts/cleanup-dsh-data.mjs', '--dedupe-exact', '--apply'], {
       cwd: process.cwd(), env: { ...process.env, PAPER_DATA_ROOT: dataRoot }, encoding: 'utf8',
@@ -97,6 +104,8 @@ test('exact archive dedupe is opt-in and retains one byte-identical result', asy
     assert.ok((await stat(join(dataRoot, canonical))).isFile());
     assert.equal(await stat(join(dataRoot, duplicate)).catch(() => null), null);
     assert.ok((await stat(join(dataRoot, different))).isFile());
+    assert.ok((await stat(join(dataRoot, archiveCopy))).isFile());
+    assert.equal(await stat(join(dataRoot, duplicateArchiveCopy)).catch(() => null), null);
   } finally {
     await rm(dataRoot, { recursive: true, force: true });
   }

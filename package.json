@@ -22,6 +22,8 @@
     "pylustrator:install": "node scripts/setup-dsh.mjs --pylustrator-only",
     "cleanup": "node scripts/cleanup-dsh-data.mjs --dry-run",
     "cleanup:apply": "node scripts/cleanup-dsh-data.mjs --apply",
+    "cleanup:dedupe": "node scripts/cleanup-dsh-data.mjs --dedupe-exact",
+    "cleanup:dedupe:apply": "node scripts/cleanup-dsh-data.mjs --dedupe-exact --apply",
     "cleanup:schedule": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-dsh-cleanup-task.ps1",
     "custom:protect": "node scripts/protect-dsh-customizations.mjs snapshot",
     "custom:verify": "node scripts/protect-dsh-customizations.mjs verify",

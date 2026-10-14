@@ -53,4 +53,4 @@ Author-approved `continue_paper_workflow` action `repair-gate` rechecks one cita
 `.dsh-state/pipeline-artifacts.json` records paths, sizes, roles and retention decisions at phase boundaries.
 Raw inputs, code, results, manuscripts, checkpoints, logs, archives and unknown files are retained.
 Only ordinary `.tmp` files older than 24 hours under `.dsh-state/runtime/tmp/` are automatically removed, at most 200 per check.
-Fresh temporary files over 64 MiB produce a warning; no mass deletion, archive purge or source-data deletion is performed.
+Fresh temporary files over 64 MiB produce a warning. `npm run cleanup` previews low-risk expired logs, temporary files and superseded managed backups; `npm run cleanup:apply` applies that plan. `npm run cleanup:dedupe` separately previews large byte-identical files inside `ARCHIVE_WORK_FILES`, and `npm run cleanup:dedupe:apply` removes only exact duplicates while retaining one hash-verified copy. Archives with different bytes, source datasets, results and current deliverables are never removed by dedupe.
