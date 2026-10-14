@@ -2,7 +2,7 @@ import 'dotenv/config';
 
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, mkdir, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -20,7 +20,7 @@ const DEFAULTS = {
   tempDays: 3,
   backupDays: 30,
   npmCacheDays: null,
-  dedupeExact: false,
+  dedupeExact: true,
 };
 
 const PROTECTED_SEGMENTS = new Set([
@@ -38,6 +38,7 @@ function parseArgs(argv) {
     else if (arg.startsWith('--backup-days=')) options.backupDays = Number(arg.split('=')[1]);
     else if (arg.startsWith('--npm-cache-days=')) options.npmCacheDays = Number(arg.split('=')[1]);
     else if (arg === '--dedupe-exact') options.dedupeExact = true;
+    else if (arg === '--no-dedupe-exact') options.dedupeExact = false;
     else throw new Error(`Unknown cleanup option: ${arg}`);
   }
   return options;
@@ -45,6 +46,12 @@ function parseArgs(argv) {
 
 function olderThan(pathStat, days) {
   return NOW - pathStat.mtimeMs > days * DAY_MS;
+}
+
+function isManagedTempArtifact(path) {
+  const relativePath = relative(join(STATE_ROOT, 'tmp'), path).split(sep);
+  if (relativePath.length < 2 || relativePath[0] === '..' || isAbsolute(relativePath[0])) return false;
+  return /^(?:dsh-(?:workspace-changes|spill|acl-skill)-|tsx-)|^node-compile-cache$/i.test(relativePath[0]);
 }
 
 function hasProtectedSegment(path) {
@@ -157,7 +164,7 @@ async function addExactArchiveDuplicateMatches(actions, papersRoot) {
     for (const duplicate of group.slice(1)) actions.push({
       type: 'file', path: duplicate.path, bytes: duplicate.bytes,
       sha256: duplicate.digest, retainedPath: retained.path,
-      reason: 'byte-identical archived artifact; canonical copy retained (requires --dedupe-exact --apply)',
+      reason: 'byte-identical archived artifact; canonical copy retained after SHA-256 verification',
     });
   }
 }
@@ -174,8 +181,8 @@ async function buildPlan(options) {
   await addFileMatches(
     actions,
     join(STATE_ROOT, 'tmp'),
-    (_path, pathStat) => olderThan(pathStat, options.tempDays),
-    `state tmp older than ${options.tempDays} days`,
+    (path, pathStat) => isManagedTempArtifact(path) && olderThan(pathStat, options.tempDays),
+    `managed state temp/cache older than ${options.tempDays} days`,
   );
   if (options.npmCacheDays !== null) {
     await addFileMatches(
@@ -266,5 +273,14 @@ console.log(`DSH cleanup mode: ${options.dryRun ? 'dry-run' : 'apply'}`);
 console.log(`Candidates: ${plan.length}, reclaimable: ${formatBytes(totalBytes)}`);
 console.log(`Removed: ${result.removedItems}, reclaimed: ${formatBytes(result.removedBytes)}`);
 console.log(`Report: ${reportPath}`);
+if (!options.dryRun) {
+  const lockPath = join(STATE_ROOT, 'cleanup-running.json');
+  let lock;
+  try { lock = JSON.parse(await readFile(lockPath, 'utf8')); } catch { /* No active scheduled run. */ }
+  if (!process.env.DSH_CLEANUP_RUN_ID || lock?.runId === process.env.DSH_CLEANUP_RUN_ID) {
+    await writeFile(join(STATE_ROOT, 'last-cleanup.json'), JSON.stringify({ lastRunAt: new Date().toISOString() }, null, 2), 'utf8');
+  }
+  if (lock?.runId === process.env.DSH_CLEANUP_RUN_ID) await rm(lockPath, { force: true });
+}
 if (options.dryRun) console.log('Run npm run cleanup:apply to delete these low-risk files.');
-if (options.dryRun && options.dedupeExact) console.log('Exact archive duplicates require: node scripts/cleanup-dsh-data.mjs --dedupe-exact --apply');
+if (options.dryRun && options.dedupeExact) console.log('Exact archive duplicates are included in npm run cleanup:apply after hash verification.');

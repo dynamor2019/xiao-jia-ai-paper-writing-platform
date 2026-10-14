@@ -19,6 +19,11 @@ test('cleanup removes only expired transient and pipeline staging files', async 
       'output/papers/paper-a/ARCHIVE_WORK_FILES/manuscript.before-archived.bak',
       'output/papers/paper-a/.dsh-state/unmanaged.bak',
       '.dsh-state/npm-cache/old-log.log',
+      '.dsh-state/tmp/tsx-test/old-cache',
+      '.dsh-state/tmp/node-compile-cache/old-cache',
+      '.dsh-state/tmp/session-latest.jsonl',
+      '.dsh-state/tmp/cv_debug.log',
+      '.dsh-state/tmp/unclassified/old-file',
     ];
     for (const file of oldFiles) {
       const path = join(dataRoot, file);
@@ -49,22 +54,24 @@ test('cleanup removes only expired transient and pipeline staging files', async 
     assert.equal((await stat(join(dataRoot, oldFiles[1])).catch(() => null)), null);
     assert.equal((await stat(join(dataRoot, backups[0])).catch(() => null)), null);
     assert.equal((await stat(join(dataRoot, backups[1])).catch(() => null)), null);
-    for (const file of [...oldFiles.slice(2), ...backups.slice(2)]) assert.ok((await stat(join(dataRoot, file))).isFile(), file);
-    assert.ok((await stat(join(dataRoot, oldFiles.at(-1))).catch(() => null))?.isFile(), 'npm cache is not traversed by the default cleanup');
+    assert.ok(JSON.parse(await readFile(join(dataRoot, '.dsh-state', 'last-cleanup.json'), 'utf8')).lastRunAt);
+    for (const file of [...oldFiles.slice(2, 8), ...oldFiles.slice(10), ...backups.slice(2)]) assert.ok((await stat(join(dataRoot, file))).isFile(), file);
+    for (const file of oldFiles.slice(8, 10)) assert.equal(await stat(join(dataRoot, file)).catch(() => null), null, file);
+    assert.ok((await stat(join(dataRoot, oldFiles[7])).catch(() => null))?.isFile(), 'npm cache is not traversed by the default cleanup');
     assert.equal((await readFile(externalLog, 'utf8')), 'outside data root');
 
     const cacheCleanup = spawnSync(process.execPath, ['scripts/cleanup-dsh-data.mjs', '--apply', '--npm-cache-days=30'], {
       cwd: process.cwd(), env: { ...process.env, PAPER_DATA_ROOT: dataRoot }, encoding: 'utf8',
     });
     assert.equal(cacheCleanup.status, 0, cacheCleanup.stderr);
-    assert.equal(await stat(join(dataRoot, oldFiles.at(-1))).catch(() => null), null);
+    assert.equal(await stat(join(dataRoot, oldFiles[7])).catch(() => null), null);
   } finally {
     await rm(dataRoot, { recursive: true, force: true });
     await rm(external, { recursive: true, force: true });
   }
 });
 
-test('exact archive dedupe is opt-in and retains one byte-identical result', async () => {
+test('default cleanup deduplicates exact archive copies and retains one byte-identical result', async () => {
   const dataRoot = await mkdtemp(join(tmpdir(), 'dsh-cleanup-dedupe-'));
   try {
     const content = Buffer.alloc(1024 * 1024, 7);
@@ -82,7 +89,7 @@ test('exact archive dedupe is opt-in and retains one byte-identical result', asy
       await writeFile(path, bytes);
     }
 
-    const preview = spawnSync(process.execPath, ['scripts/cleanup-dsh-data.mjs', '--dedupe-exact'], {
+    const preview = spawnSync(process.execPath, ['scripts/cleanup-dsh-data.mjs'], {
       cwd: process.cwd(), env: { ...process.env, PAPER_DATA_ROOT: dataRoot }, encoding: 'utf8',
     });
     assert.equal(preview.status, 0, preview.stderr);
@@ -97,7 +104,7 @@ test('exact archive dedupe is opt-in and retains one byte-identical result', asy
     assert.equal(resultAction.retainedPath, canonical);
     assert.equal(archiveAction.retainedPath, archiveCopy);
 
-    const applied = spawnSync(process.execPath, ['scripts/cleanup-dsh-data.mjs', '--dedupe-exact', '--apply'], {
+    const applied = spawnSync(process.execPath, ['scripts/cleanup-dsh-data.mjs', '--apply'], {
       cwd: process.cwd(), env: { ...process.env, PAPER_DATA_ROOT: dataRoot }, encoding: 'utf8',
     });
     assert.equal(applied.status, 0, applied.stderr);

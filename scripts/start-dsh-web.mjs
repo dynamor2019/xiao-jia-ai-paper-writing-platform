@@ -1,6 +1,6 @@
 import 'dotenv/config';
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -26,6 +26,7 @@ import { resolvePaperModelEnv } from './paper-model-env.mjs';
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
 import { resolveWebProxyEnv } from './web-proxy-env.mjs';
 import { runStartupPatch } from './startup-patch.mjs';
+import { schedulePeriodicCleanup } from './periodic-cleanup.mjs';
 
 const binPath = join(PROJECT_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
 const dataRoot = resolveDataRoot();
@@ -35,7 +36,6 @@ const webWorkspace = resolve(process.env.DSH_WEB_WORKSPACE || join(PROJECT_ROOT,
 const npmPrefix = process.env.DSH_NPM_PREFIX || join(process.env.APPDATA || join(process.env.USERPROFILE || '', 'AppData', 'Roaming'), 'npm');
 const npmCache = process.env.DSH_NPM_CACHE || join(stateDir, 'npm-cache');
 const lockPath = join(stateDir, 'web-supervisor.lock.json');
-const cleanupStampPath = join(stateDir, 'last-cleanup.json');
 const supervisorLog = join(stateDir, 'web-supervisor.log');
 const childStdoutLog = join(stateDir, 'web-child.stdout.log');
 const childStderrLog = join(stateDir, 'web-child.stderr.log');
@@ -75,32 +75,6 @@ if (!existsSync(binPath)) {
   process.exit(1);
 }
 
-function runPeriodicCleanup() {
-  if (process.env.DSH_AUTO_CLEANUP === 'false') return;
-  const intervalDays = Number(process.env.DSH_AUTO_CLEANUP_DAYS || '1');
-  const intervalMs = intervalDays * 24 * 60 * 60 * 1000;
-  if (existsSync(cleanupStampPath)) {
-    try {
-      const stamp = JSON.parse(readFileSync(cleanupStampPath, 'utf8'));
-      if (Date.now() - Date.parse(stamp.lastRunAt) < intervalMs) return;
-    } catch {
-      // Broken stamps are replaced after a successful cleanup.
-    }
-  }
-  const cleanup = spawnSync(process.execPath, ['scripts/cleanup-dsh-data.mjs', '--apply'], {
-    cwd: PROJECT_ROOT,
-    env: process.env,
-    encoding: 'utf8',
-  });
-  if (cleanup.stdout) process.stdout.write(cleanup.stdout);
-  if (cleanup.stderr) process.stderr.write(cleanup.stderr);
-  if (cleanup.status === 0) {
-    writeFileSync(cleanupStampPath, JSON.stringify({ lastRunAt: new Date().toISOString() }, null, 2), 'utf8');
-  } else {
-    console.warn(`自动清理跳过：退出码 ${cleanup.status ?? 'unknown'}`);
-  }
-}
-
 process.env.NPM_CONFIG_PREFIX = npmPrefix;
 process.env.NPM_CONFIG_CACHE = npmCache;
 process.env.NPM_CONFIG_GLOBALCONFIG = join(npmPrefix, 'etc', 'npmrc');
@@ -136,7 +110,6 @@ runStartupPatch('模型延迟信号补丁', patchModelLatency);
 mkdirSync(stateDir, { recursive: true });
 mkdirSync(tempDir, { recursive: true });
 mkdirSync(webWorkspace, { recursive: true });
-runPeriodicCleanup();
 process.env.TEMP = tempDir;
 process.env.TMP = tempDir;
 process.env.TMPDIR = tempDir;
@@ -296,6 +269,7 @@ function releaseSupervisorLock() {
 process.once('exit', releaseSupervisorLock);
 
 acquireSupervisorLock();
+schedulePeriodicCleanup({ dataRoot, stateDir, projectRoot: PROJECT_ROOT, env: process.env });
 
 if (await isHealthy()) {
   logSupervisor('检测到已有健康服务，本次启动无需重复运行。');
