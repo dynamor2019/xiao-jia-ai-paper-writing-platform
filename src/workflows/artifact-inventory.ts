@@ -31,15 +31,18 @@ async function insideRoot(root: string, path: string): Promise<boolean> {
 }
 
 /** Inventory files without following links or removing scientific evidence. */
-async function inventory(root: string, directory = root): Promise<Artifact[]> {
+async function inventory(root: string, directory = root, validated = false): Promise<Artifact[]> {
   const rows: Artifact[] = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     const stat = await lstat(path);
     if (stat.isSymbolicLink()) continue;
-    if (!await insideRoot(root, path)) continue;
-    if (stat.isDirectory()) rows.push(...await inventory(root, path));
+    if (stat.isDirectory()) {
+      if (!await insideRoot(root, path)) continue;
+      rows.push(...await inventory(root, path, true));
+    }
     else if (stat.isFile()) {
+      if (!validated && !await insideRoot(root, path)) continue;
       const name = relative(root, path).split(sep).join('/');
       if (name === MANIFEST || name === `${MANIFEST}.tmp`) continue;
       rows.push({ path: name, bytes: stat.size, modifiedAt: stat.mtime.toISOString(), role: artifactRole(name), action: 'retain' });
