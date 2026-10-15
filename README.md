@@ -23,6 +23,12 @@
 
 后续再次使用时，通常只需要双击 `桌面端启动小贾AI.bat`。普通用户不用运行任何 `.ps1` 文件。
 
+## Revit 构件查询与数据导出
+
+使用 Revit MCP 功能前，必须另行安装 **RevitCortex 的 Revit 插件和 MCP Server**，并在 Revit 中打开模型、开启 Cortex Switch；只安装小贾无法直接读取 Revit。此集成为可选项，默认关闭，不影响普通论文写作。
+
+安装下载、启用开关及自定义路径见 [RevitCortex MCP 安装与连接](docs/revitcortex-mcp.md)。
+
 ## 架构
 
 项目内文件是唯一源码；`npm run web` 会先把 Web profile、论文 preset 和 skills 部署到 DSH 用户运行时，再启动界面。Web `/paper` 与 CLI `npm run paper:cli` 调用同一个 20 阶段研究生命周期：

@@ -10,6 +10,18 @@
       name: ./research-memory.js
     - id: model-router
       name: ./model-router.js
+    - id: revitcortex-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      disabled: !!js process.platform !== 'win32' || process.env.REVITCORTEX_ENABLED !== '1'
+      config:
+        serverName: revitcortex
+        transport: stdio
+        command: !!js (process.env.REVITCORTEX_SERVER_DIR || process.env.USERPROFILE + '/.revitcortex/server') + '/RevitCortex.Server.exe'
+        cwd: !!js process.env.REVITCORTEX_SERVER_DIR || process.env.USERPROFILE + '/.revitcortex/server'
+        toolCallTimeoutMs: 120000
+        failOnStartupError: false
+        reconnect:
+          enabled: false
 
 # 新会话默认使用论文专用 preset；旧会话保留创建时的 preset。
 - id: agent-preset-registry
