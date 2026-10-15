@@ -201,3 +201,191 @@ function restoreEnv(name: string, value: string | undefined): void {
   }
   process.env[name] = value;
 }
+
+test('explicit provider and model remain selected when a task is also supplied', async () => {
+  const saved = saveEnv(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_MODE',
+    'MODEL_STRICT_OUTPUT', 'ROUTE_PROTOCOL_PROVIDER', 'MODEL_MIN_INTERVAL_MS']);
+  const originalFetch = globalThis.fetch;
+  process.env.ANTHROPIC_API_KEY = 'fixture-key';
+  process.env.ANTHROPIC_BASE_URL = 'https://manual.example/v1';
+  process.env.ANTHROPIC_API_MODE = 'openai-completions';
+  process.env.MODEL_STRICT_OUTPUT = 'false';
+  process.env.MODEL_MIN_INTERVAL_MS = '0';
+  process.env.ROUTE_PROTOCOL_PROVIDER = 'openai';
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), 'https://manual.example/v1/chat/completions');
+    assert.equal(JSON.parse(String(init?.body)).model, 'manual-claude');
+    return Response.json({ choices: [{ message: { content: 'manual selection preserved' } }] });
+  };
+  try {
+    const response = await new ModelClient().chat([{ role: 'user', content: 'fixture' }],
+      { task: 'protocol', provider: 'claude', model: 'manual-claude' });
+    assert.equal(response.provider, 'claude');
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreSavedEnv(saved);
+  }
+});
+
+test('configured completions protocol is honored for a GPT model', async () => {
+  const saved = saveEnv(['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_MODE', 'MODEL_STRICT_OUTPUT']);
+  const originalFetch = globalThis.fetch;
+  process.env.OPENAI_API_KEY = 'fixture-key';
+  process.env.OPENAI_BASE_URL = 'https://configured.example/v1';
+  process.env.OPENAI_API_MODE = 'openai-completions';
+  process.env.MODEL_STRICT_OUTPUT = 'false';
+  globalThis.fetch = async (input) => {
+    assert.equal(String(input), 'https://configured.example/v1/chat/completions');
+    return Response.json({ choices: [{ message: { content: 'correct protocol' } }] });
+  };
+  try {
+    assert.equal((await new ModelClient().chat([{ role: 'user', content: 'fixture' }],
+      { provider: 'openai', model: 'gpt-5.5' })).content, 'correct protocol');
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreSavedEnv(saved);
+  }
+});
+
+test('retries and cross-provider fallback share a three-request budget', async () => {
+  const saved = saveEnv(['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_MODE',
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_MODE', 'MODEL_MIN_INTERVAL_MS',
+    'ROUTE_PROTOCOL_PROVIDER', 'ROUTE_PROTOCOL_MODEL', 'ROUTE_PROTOCOL_FALLBACK_PROVIDER',
+    'ROUTE_PROTOCOL_FALLBACK_MODEL']);
+  const originalFetch = globalThis.fetch;
+  process.env.OPENAI_API_KEY = 'fixture-key';
+  process.env.ANTHROPIC_API_KEY = 'fixture-key';
+  process.env.OPENAI_BASE_URL = 'https://fixture.example/v1';
+  process.env.ANTHROPIC_BASE_URL = 'https://fixture.example/v1';
+  process.env.OPENAI_API_MODE = 'openai-completions';
+  process.env.ANTHROPIC_API_MODE = 'openai-completions';
+  process.env.MODEL_MIN_INTERVAL_MS = '0';
+  process.env.ROUTE_PROTOCOL_PROVIDER = 'claude';
+  process.env.ROUTE_PROTOCOL_MODEL = 'primary';
+  process.env.ROUTE_PROTOCOL_FALLBACK_PROVIDER = 'openai';
+  process.env.ROUTE_PROTOCOL_FALLBACK_MODEL = 'fallback';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return Response.json({ error: 'unavailable' }, { status: 503 });
+  };
+  try {
+    await assert.rejects(new ModelClient().chat([{ role: 'user', content: 'fixture' }],
+      { task: 'protocol', maxAttempts: 2 }), /停止自动重试/);
+    assert.equal(calls, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreSavedEnv(saved);
+  }
+});
+
+test('insufficient quota stops without retrying another model', async () => {
+  const saved = saveEnv(['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_MODE',
+    'ROUTE_PROTOCOL_PROVIDER', 'ROUTE_PROTOCOL_MODEL', 'ROUTE_PROTOCOL_FALLBACK_PROVIDER',
+    'ROUTE_PROTOCOL_FALLBACK_MODEL']);
+  const originalFetch = globalThis.fetch;
+  process.env.OPENAI_API_KEY = 'fixture-key';
+  process.env.OPENAI_BASE_URL = 'https://fixture.example/v1';
+  process.env.OPENAI_API_MODE = 'openai-completions';
+  process.env.ROUTE_PROTOCOL_PROVIDER = 'openai';
+  process.env.ROUTE_PROTOCOL_MODEL = 'primary';
+  process.env.ROUTE_PROTOCOL_FALLBACK_PROVIDER = 'claude';
+  process.env.ROUTE_PROTOCOL_FALLBACK_MODEL = 'fallback';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return Response.json({ error: { code: 'insufficient_quota' } }, { status: 429 });
+  };
+  try {
+    await assert.rejects(new ModelClient().chat([{ role: 'user', content: 'fixture' }],
+      { task: 'protocol', maxAttempts: 3 }), /insufficient_quota/);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreSavedEnv(saved);
+  }
+});
+
+test('Grok uses its own key and Responses protocol rather than the OpenAI group', async () => {
+  const saved = saveEnv(['GROK_API_KEY', 'GROK_BASE_URL', 'GROK_API_MODE', 'OPENAI_API_KEY']);
+  const originalFetch = globalThis.fetch;
+  process.env.GROK_API_KEY = 'fixture-grok-group';
+  process.env.GROK_BASE_URL = 'https://grok.example/v1';
+  process.env.GROK_API_MODE = 'openai-responses';
+  process.env.OPENAI_API_KEY = 'wrong-group-key';
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), 'https://grok.example/v1/responses');
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer fixture-grok-group');
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.model, 'grok-4.7');
+    assert.equal(body.reasoning, undefined);
+    return Response.json({ output: [{ type: 'message', content: [{ type: 'output_text', text: 'OK' }] }] });
+  };
+  try {
+    const response = await new ModelClient().chat([{ role: 'user', content: 'fixture' }],
+      { provider: 'grok', model: 'grok-4.7', minOutputChars: 1 });
+    assert.equal(response.provider, 'grok');
+    assert.equal(response.content, 'OK');
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreSavedEnv(saved);
+  }
+});
+
+test('DeepSeek uses its own key and configured completions endpoint', async () => {
+  const saved = saveEnv(['DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_API_MODE', 'OPENAI_API_KEY']);
+  const originalFetch = globalThis.fetch;
+  process.env.DEEPSEEK_API_KEY = 'fixture-deepseek-group';
+  process.env.DEEPSEEK_BASE_URL = 'https://deepseek.example/v1/';
+  process.env.DEEPSEEK_API_MODE = 'openai-completions';
+  process.env.OPENAI_API_KEY = 'wrong-group-key';
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), 'https://deepseek.example/v1/chat/completions');
+    assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer fixture-deepseek-group');
+    return Response.json({ choices: [{ message: { content: 'OK' } }] });
+  };
+  try {
+    assert.equal((await new ModelClient().chat([{ role: 'user', content: 'fixture' }],
+      { provider: 'deepseek', model: 'fixture-model', minOutputChars: 1 })).provider, 'deepseek');
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreSavedEnv(saved);
+  }
+});
+
+test('unknown provider stops before making an HTTP request', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return Response.json({}); };
+  try {
+    await assert.rejects(new ModelClient().chat([{ role: 'user', content: 'fixture' }],
+      { provider: 'unconfigured-group' as 'openai', model: 'fixture-model' }), /Unsupported model provider/);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('native DeepSeek Messages protocol retains its own authentication and response identity', async () => {
+  const saved = saveEnv(['DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_API_MODE', 'ANTHROPIC_API_KEY']);
+  const originalFetch = globalThis.fetch;
+  process.env.DEEPSEEK_API_KEY = 'native-deepseek-key';
+  process.env.DEEPSEEK_BASE_URL = 'https://native.example/anthropic';
+  process.env.DEEPSEEK_API_MODE = 'anthropic-messages';
+  process.env.ANTHROPIC_API_KEY = 'wrong-claude-group';
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), 'https://native.example/anthropic/v1/messages');
+    assert.equal(new Headers(init?.headers).get('x-api-key'), 'native-deepseek-key');
+    assert.equal(JSON.parse(String(init?.body)).system, 'system instructions');
+    return Response.json({ content: [{ type: 'text', text: 'OK' }] });
+  };
+  try {
+    const response = await new ModelClient().chat([{ role: 'system', content: 'system instructions' },
+      { role: 'user', content: 'fixture' }], { provider: 'deepseek', model: 'fixture-model', minOutputChars: 1 });
+    assert.equal(response.provider, 'deepseek');
+    assert.equal(response.content, 'OK');
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreSavedEnv(saved);
+  }
+});

@@ -1,8 +1,9 @@
-import 'dotenv/config';
+import './project-env.mjs';
 
 import { writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { resolvePaperModelEnv } from './paper-model-env.mjs';
 
 import { getRoute } from '../dist/config/model-routing.js';
 import { getModelClient } from '../dist/lib/model-client.js';
@@ -14,6 +15,7 @@ Task: evaluate whether a paper workflow should block an overclaimed BIM/IFC rout
 Do not predict acceptance probability.`;
 
 const results = [];
+Object.assign(process.env, resolvePaperModelEnv());
 
 for (const task of TASKS) {
   const route = getRoute(task);

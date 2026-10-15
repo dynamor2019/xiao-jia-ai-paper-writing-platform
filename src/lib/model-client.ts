@@ -9,10 +9,13 @@ import {
   getRouteCandidates,
   getApiKey,
   getBaseUrl,
+  getDefaultModel,
+  assertModelProvider,
   type ModelProvider,
   type TaskType,
 } from '../config/model-routing.js';
 import { readResponsesStream } from './responses-stream.js';
+import { boundedModelAttempts, isBillingModelFailure, usesResponsesProtocol } from './model-request-policy.js';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -49,37 +52,37 @@ export class ModelClient {
 
   /**
    * 统一聊天接口
-   * 优先按 task 路由，其次按显式 provider/model
+   * 显式 provider/model 优先，未指定时按 task 路由
    */
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<ChatResponse> {
     let provider: ModelProvider = options.provider || 'openai';
+    assertModelProvider(provider);
     let model = options.model;
     let routes = [{ provider, model: model || '' }];
 
-    if (options.task) {
+    if (options.task && !options.provider) {
       const route = getRoute(options.task);
       provider = route.provider;
       model = model || route.model;
-      routes = getRouteCandidates(options.task);
+      routes = options.model ? [{ provider, model }] : getRouteCandidates(options.task);
       routes[0] = { provider, model };
     }
 
     if (!model) {
-      model = provider === 'claude'
-        ? process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514'
-        : process.env.OPENAI_MODEL || 'gpt-5.6-terra';
+      model = getDefaultModel(provider);
     }
 
     routes[0] = { provider, model };
     let lastError: unknown;
+    const budget = { remaining: 3 };
     for (let routeIndex = 0; routeIndex < routes.length; routeIndex++) {
       const route = routes[routeIndex];
       try {
-        return await this.requestRoute(messages, route, options);
+        return await this.requestRoute(messages, route, options, budget);
       } catch (error) {
         lastError = error;
         const fallback = routes[routeIndex + 1];
-        if (!fallback || !isRouteFailoverEligible(error)) throw error;
+        if (!fallback || budget.remaining === 0 || !isRouteFailoverEligible(error)) throw error;
         console.warn(`[模型切换] ${route.provider}/${route.model} 请求失败，切换到 ${fallback.provider}/${fallback.model}`);
       }
     }
@@ -89,32 +92,35 @@ export class ModelClient {
   private async requestRoute(
     messages: ChatMessage[],
     route: { provider: ModelProvider; model: string },
-    options: ChatOptions
+    options: ChatOptions,
+    budget: { remaining: number }
   ): Promise<ChatResponse> {
     const configuredRetries = Number(process.env.MODEL_MAX_RETRIES || 0);
     const defaultAttempts = Number.isSafeInteger(configuredRetries) && configuredRetries >= 0
       ? configuredRetries + 1
       : 1;
-    const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? defaultAttempts));
+    const maxAttempts = boundedModelAttempts(options.maxAttempts ?? defaultAttempts);
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        budget.remaining -= 1;
         await this.waitForPacing(route.provider);
-        if (route.provider === 'claude') {
-          const response = await this.chatClaude(messages, route.model, options);
+        if (route.provider === 'claude' || (route.provider === 'deepseek' && process.env.DEEPSEEK_API_MODE === 'anthropic-messages')) {
+          const response = await this.chatClaude(messages, route.model, options, route.provider);
           assertUsefulResponse(response.content, options, route.model);
           return response;
         }
-        const response = await this.chatOpenAI(messages, route.model, options);
+        const response = await this.chatOpenAI(messages, route.model, options, route.provider);
         assertUsefulResponse(response.content, options, route.model);
         return response;
       } catch (error) {
         const retryable = isRetryableModelError(error);
         if (!retryable) throw error;
         if (error instanceof ModelRequestError && error.code === 'EMPTY_RESPONSE') throw error;
-        if (attempt >= maxAttempts) {
+        if (attempt >= maxAttempts || budget.remaining === 0) {
           const detail = error instanceof Error ? error.message : String(error);
           throw new Error(
-            `中转站上游暂不可用；为避免重复计费，已停止自动重试。稍后手动继续即可。原始错误：${detail}`
+            `中转站上游暂不可用；为避免重复计费，已停止自动重试。稍后手动继续即可。原始错误：${detail}`,
+            { cause: error }
           );
         }
         await delay(800 * attempt);
@@ -136,7 +142,7 @@ export class ModelClient {
    * 判断模型是否使用 Responses API（gpt-5.x 系列在中转站只支持 Responses API）
    */
   private useResponsesApi(model: string): boolean {
-    return /^gpt-(?:5|6)(?:[.-]|$)/i.test(model) || process.env.OPENAI_USE_RESPONSES_API === 'true';
+    return usesResponsesProtocol(model, process.env);
   }
 
   /**
@@ -145,12 +151,17 @@ export class ModelClient {
   private async chatOpenAI(
     messages: ChatMessage[],
     model: string,
-    options: ChatOptions
+    options: ChatOptions,
+    provider: ModelProvider = 'openai'
   ): Promise<ChatResponse> {
-    if (this.useResponsesApi(model)) {
-      return this.chatOpenAIResponses(messages, model, options);
+    const responses = provider === 'openai' ? this.useResponsesApi(model)
+      : usesResponsesProtocol(model, { OPENAI_API_MODE: provider === 'grok'
+        ? process.env.GROK_API_MODE || 'openai-responses'
+        : process.env.DEEPSEEK_API_MODE || 'openai-completions' });
+    if (responses) {
+      return this.chatOpenAIResponses(messages, model, options, provider);
     }
-    return this.chatOpenAICompletions(messages, model, options);
+    return this.chatOpenAICompletions(messages, model, options, provider);
   }
 
   /**
@@ -166,7 +177,7 @@ export class ModelClient {
     const baseUrl = getBaseUrl(provider);
 
     if (!apiKey) {
-      throw new Error(`${provider === 'claude' ? 'ANTHROPIC' : 'OPENAI'}_API_KEY 未配置，请在 .env 中填写`);
+      throw new Error(`API key for ${provider} is not configured; use the DSH Models page or its configured credential reference`);
     }
 
     // Responses API 的 input 格式
@@ -247,13 +258,14 @@ export class ModelClient {
   private async chatOpenAICompletions(
     messages: ChatMessage[],
     model: string,
-    options: ChatOptions
+    options: ChatOptions,
+    provider: ModelProvider = 'openai'
   ): Promise<ChatResponse> {
-    const apiKey = getApiKey('openai');
-    const baseUrl = getBaseUrl('openai');
+    const apiKey = getApiKey(provider);
+    const baseUrl = getBaseUrl(provider);
 
     if (!apiKey) {
-      throw new Error('OPENAI_API_KEY 未配置，请在 .env 中填写');
+      throw new Error(`API key for ${provider} is not configured; use its configured credential reference`);
     }
 
     const body: Record<string, unknown> = {
@@ -263,7 +275,7 @@ export class ModelClient {
       max_tokens: options.maxTokens ?? 4096,
     };
 
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await fetch(buildApiUrl(baseUrl, '/chat/completions'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -275,18 +287,18 @@ export class ModelClient {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`[OpenAI ${model}] 调用失败 [${response.status}]: ${errorText}`);
+      throw new Error(`[${provider} ${model}] 调用失败 [${response.status}]: ${errorText}`);
     }
 
-    const data = await parseJsonResponse(response, `OpenAI ${model}`);
+    const data = await parseJsonResponse(response, `${provider} ${model}`);
     const content = (data.choices as Array<Record<string, unknown>>)?.[0]?.message as Record<string, unknown> | undefined;
     const text = (content?.content as string) || '';
     const usage = (data.usage as Record<string, number>) || {};
-    assertNonEmptyResponse(text, 'openai', model, usage.completion_tokens || 0);
+    assertNonEmptyResponse(text, provider, model, usage.completion_tokens || 0);
 
     return {
       content: text,
-      provider: 'openai' as const,
+      provider,
       model,
       usage: {
         promptTokens: usage.prompt_tokens || 0,
@@ -303,20 +315,21 @@ export class ModelClient {
   private async chatClaude(
     messages: ChatMessage[],
     model: string,
-    options: ChatOptions
+    options: ChatOptions,
+    provider: ModelProvider = 'claude'
   ): Promise<ChatResponse> {
-    const apiKey = getApiKey('claude');
-    const baseUrl = getBaseUrl('claude');
+    const apiKey = getApiKey(provider);
+    const baseUrl = getBaseUrl(provider);
 
     if (!apiKey) {
-      throw new Error('ANTHROPIC_API_KEY 未配置，请在 .env 中填写');
+      throw new Error(`API key for ${provider} is not configured; use its configured credential reference`);
     }
 
-    if (process.env.ANTHROPIC_API_MODE?.trim().toLowerCase() === 'openai-responses') {
-      return this.chatOpenAIResponses(messages, model, options, 'claude');
+    if (provider === 'claude' && process.env.ANTHROPIC_API_MODE?.trim().toLowerCase() === 'openai-responses') {
+      return this.chatOpenAIResponses(messages, model, options, provider);
     }
 
-    if (useClaudeOpenAICompatibility(baseUrl)) {
+    if (provider === 'claude' && useClaudeOpenAICompatibility(baseUrl)) {
       return this.chatClaudeCompletions(messages, model, options, apiKey, baseUrl);
     }
 
@@ -345,6 +358,7 @@ export class ModelClient {
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
@@ -353,10 +367,10 @@ export class ModelClient {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`[Claude ${model}] 调用失败 [${response.status}]: ${errorText}`);
+      throw new Error(`[${provider} ${model}] 调用失败 [${response.status}]: ${errorText}`);
     }
 
-    const data = await parseJsonResponse(response, `Claude ${model}`);
+    const data = await parseJsonResponse(response, `${provider} ${model}`);
 
     // Claude 返回 content 数组，取 text 类型的拼接
     const contentBlocks = (data.content as Array<{ type: string; text?: string }>) || [];
@@ -366,11 +380,11 @@ export class ModelClient {
       .join('');
 
     const usage = (data.usage as Record<string, number>) || {};
-    assertNonEmptyResponse(content, 'claude', model, usage.output_tokens || 0);
+    assertNonEmptyResponse(content, provider, model, usage.output_tokens || 0);
 
     return {
       content,
-      provider: 'claude' as const,
+      provider,
       model,
       usage: {
         promptTokens: usage.input_tokens || 0,
@@ -473,11 +487,13 @@ async function parseJsonResponse(response: Response, label: string): Promise<Rec
 }
 
 function isRetryableModelError(error: unknown): boolean {
+  if (isBillingModelFailure(error)) return false;
   if (error instanceof ModelRequestError) return true;
   return isTransientTransportError(error);
 }
 
 function isRouteFailoverEligible(error: unknown): boolean {
+  if (isBillingModelFailure(error)) return false;
   if (error instanceof ModelRequestError && error.code === 'EMPTY_RESPONSE') return true;
   if (isTransientTransportError(error)) return true;
   const message = error instanceof Error ? error.message : String(error);

@@ -1,5 +1,7 @@
 # 用户 patch 层
 - insert:
+    - id: paper-model-credentials
+      name: ./model-credentials.js
     - id: paper-command
       name: ./paper-command.js
     - id: academic-search

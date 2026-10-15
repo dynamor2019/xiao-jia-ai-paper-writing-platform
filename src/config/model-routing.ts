@@ -5,7 +5,14 @@
  * 通过 .env 中的 ROUTE_XXX_PROVIDER 和 ROUTE_XXX_MODEL 控制
  */
 
-export type ModelProvider = 'openai' | 'claude';
+export type ModelProvider = 'openai' | 'claude' | 'grok' | 'deepseek';
+
+/** Refuse unknown groups rather than sending their models with OpenAI credentials. */
+export function assertModelProvider(provider: unknown): asserts provider is ModelProvider {
+  if (typeof provider !== 'string' || !['openai', 'claude', 'grok', 'deepseek'].includes(provider)) {
+    throw new Error('Unsupported model provider; expected openai, claude, grok or deepseek');
+  }
+}
 
 export type TaskType =
   | 'discovery'  // 联网选题与创新性/可行性评估
@@ -60,9 +67,11 @@ export function getRoute(task: TaskType): ModelRoute {
   const envProvider = process.env[`${envPrefix}_PROVIDER`] as ModelProvider | undefined;
   const envModel = process.env[`${envPrefix}_MODEL`];
   const def = DEFAULT_ROUTES[task];
+  const provider = envProvider || def.provider;
+  assertModelProvider(provider);
   return {
-    provider: envProvider || def.provider,
-    model: envModel || def.model,
+    provider,
+    model: envModel || (provider === def.provider ? def.model : getDefaultModel(provider)),
   };
 }
 
@@ -75,12 +84,19 @@ export function getRouteCandidates(task: TaskType): ModelRoute[] {
       || DEFAULT_FALLBACK_ROUTES[task].provider,
     model: process.env[`${envPrefix}_MODEL`] || DEFAULT_FALLBACK_ROUTES[task].model,
   };
+  assertModelProvider(fallback.provider);
+  if (!process.env[`${envPrefix}_MODEL`] && fallback.provider !== DEFAULT_FALLBACK_ROUTES[task].provider) {
+    fallback.model = getDefaultModel(fallback.provider);
+  }
   if (fallback.provider === primary.provider && fallback.model === primary.model) return [primary];
   return [primary, fallback];
 }
 
 /** 获取 provider 的默认模型 */
 export function getDefaultModel(provider: ModelProvider): string {
+  assertModelProvider(provider);
+  if (provider === 'grok') return process.env.GROK_MODEL || 'grok-4.7';
+  if (provider === 'deepseek') return process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
   if (provider === 'claude') {
     return process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
   }
@@ -89,6 +105,9 @@ export function getDefaultModel(provider: ModelProvider): string {
 
 /** 获取 provider 的 API Key */
 export function getApiKey(provider: ModelProvider): string {
+  assertModelProvider(provider);
+  if (provider === 'grok') return process.env.GROK_API_KEY || process.env.SUB2API_API_KEY || '';
+  if (provider === 'deepseek') return process.env.DEEPSEEK_API_KEY || '';
   if (provider === 'claude') {
     return process.env.ANTHROPIC_API_KEY || '';
   }
@@ -97,6 +116,12 @@ export function getApiKey(provider: ModelProvider): string {
 
 /** 获取 provider 的 Base URL */
 export function getBaseUrl(provider: ModelProvider): string {
+  assertModelProvider(provider);
+  if (provider === 'grok') {
+    if (!process.env.GROK_BASE_URL) throw new Error('GROK_BASE_URL is not configured; resolve the active Web profile before calling Grok');
+    return process.env.GROK_BASE_URL;
+  }
+  if (provider === 'deepseek') return process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
   if (provider === 'claude') {
     return process.env.ANTHROPIC_BASE_URL || process.env.PROXY_BASE_URL || 'https://api.anthropic.com';
   }

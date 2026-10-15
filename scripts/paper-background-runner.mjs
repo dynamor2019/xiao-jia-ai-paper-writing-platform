@@ -1,3 +1,5 @@
+import './project-env.mjs';
+
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';

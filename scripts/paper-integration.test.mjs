@@ -16,8 +16,18 @@ import { isRecoverablePaperFailure, resolveMaxRecoveries } from './paper-retry-p
 import { patchModelLatency } from './patch-dsh-model-catalog.mjs';
 
 test('Web model router declares the services read by its request handlers', () => {
-  assert.deepEqual(webRouterInject, ['llm', 'agentDefaultModel']);
+  assert.deepEqual(webRouterInject, ['llm', 'agentDefaultModel', 'credentials']);
 });
+
+/** Model router fixtures expose the same credential seam as a real DSH host. */
+function routingServices(providers) {
+  return (service) => {
+    if (service === 'llm') return { listProviders: () => providers };
+    if (service === 'credentials') return { resolve: async (ref) =>
+      process.env[ref] ? { value: process.env[ref] } : undefined };
+    return undefined;
+  };
+}
 
 test('paper background retries are bounded to prevent repeated upstream call costs', () => {
   assert.equal(resolveMaxRecoveries(undefined), 3);
@@ -364,7 +374,7 @@ test('Web routing uses the configured fallback when a provider is unavailable', 
   try {
     installWebModelRouter({
       on: (event, handler) => handlers.set(event, handler),
-      get: () => ({ listProviders: () => [{ id: 'rayinai' }] }),
+      get: routingServices([{ id: 'rayinai' }]),
       logger: { info: () => {} },
     }, async () => [
       { provider: 'claude', model: 'claude-opus-5' },
@@ -389,7 +399,7 @@ test('Web routing does not force RayinAI when its credential is absent', async (
   try {
     installWebModelRouter({
       on: (event, handler) => handlers.set(event, handler),
-      get: () => ({ listProviders: () => [{ id: 'rayinai' }, { id: 'rayinai-claude' }] }),
+      get: routingServices([{ id: 'rayinai' }, { id: 'rayinai-claude' }]),
       logger: { info: () => {} },
     }, async () => [{ provider: 'openai', model: 'gpt-5.6-sol' }]);
     await handlers.get('agent/pre-step')({ agent, turn: 1 }, async () => ({
@@ -420,7 +430,7 @@ test('Web routing keeps a selected provider when the key is not in process.env',
     const route = await handlers.get('agent/request')({ agent, turn: 1 }, async () => ({
       provider: 'rayinai-claude', model: 'claude-sonnet-5-5', reasoningEffort: 'high',
     }));
-    assert.deepEqual(route, { provider: 'rayinai-claude', model: 'claude-sonnet-5', reasoningEffort: 'high' });
+    assert.deepEqual(route, { provider: 'rayinai-claude', model: 'claude-sonnet-5-5', reasoningEffort: 'high' });
   } finally {
     restoreSavedEnv(saved);
   }
@@ -454,7 +464,7 @@ test('Web routing preserves an explicit model when no configured fallback exists
   }
 });
 
-test('Web routing skips a rejected task model when the old session selected it', async () => {
+test('Web routing reports a rejected manually selected model without silent replacement', async () => {
   const saved = saveEnv(['OPENAI_API_KEY']);
   process.env.OPENAI_API_KEY = 'test-openai-key';
   const handlers = new Map();
@@ -482,8 +492,8 @@ test('Web routing skips a rejected task model when the old session selected it',
       agent, turn: 1, step: 1,
       failure: { code: 'PI_AI_ERROR', message: 'Model "gpt-5.6-terra" is not supported' },
     }, async () => undefined);
-    assert.deepEqual(retry, { kind: 'retry' });
-    assert.deepEqual(await request(), { provider: 'rayinai', model: 'gpt-5.6-sol' });
+    assert.equal(retry, undefined);
+    assert.deepEqual(await request(), { provider: 'rayinai', model: 'gpt-5.6-terra' });
   } finally {
     restoreSavedEnv(saved);
   }
@@ -723,7 +733,7 @@ test('paper model settings use Web credentials when env keys are absent', async 
   try {
     await mkdir(root, { recursive: true });
     await writeFile(join(root, 'settings.yaml'), 'llm-pi-ai:\n  providers:\n    rayinai:\n      apiKeyEnv: WEB_OPENAI_KEY\n      baseURL: https://proxy.example/v1\n      api: openai-responses\n    rayinai-claude:\n      apiKeyEnv: WEB_CLAUDE_KEY\n      baseURL: https://proxy.example/v1\n      api: openai-completions\n');
-    await writeFile(join(root, '.credentials.yaml'), 'refs:\n  WEB_OPENAI_KEY: web-openai-secret\n  WEB_CLAUDE_KEY: web-claude-secret\n');
+    await writeFile(join(root, '.credentials.yaml'), 'version: 1\nrefs:\n  WEB_OPENAI_KEY: web-openai-secret\n  WEB_CLAUDE_KEY: web-claude-secret\n');
     const fromWeb = resolvePaperModelEnv({}, root);
     assert.equal(fromWeb.OPENAI_API_KEY, 'web-openai-secret');
     assert.equal(fromWeb.ANTHROPIC_API_KEY, 'web-claude-secret');
@@ -844,6 +854,7 @@ test('runtime sync keeps existing provider catalogs and uses the shipped profile
     assert.match(profile, /sub2api-grok:/);
     assert.match(profile, /grok-4\.7/);
     assert.match(profile, /rayinai-claude:/);
+    assert.match(profile, /rayinai-claude:[\s\S]*?apiKeyEnv: ANTHROPIC_API_KEY/);
     await syncDshRuntime();
     assert.deepEqual(await readFile(join(root, 'settings.yaml')), before);
   } finally {

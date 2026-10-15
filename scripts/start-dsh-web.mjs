@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './project-env.mjs';
 
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -22,7 +22,6 @@ import { patchDshBranding } from './patch-dsh-branding.mjs';
 import { patchDshPreviewBadge } from './patch-dsh-preview-badge.mjs';
 import { patchDshWelcomeNotice } from './patch-dsh-welcome-notice.mjs';
 import { syncDshRuntime } from './sync-dsh-runtime.mjs';
-import { resolvePaperModelEnv } from './paper-model-env.mjs';
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
 import { resolveWebProxyEnv } from './web-proxy-env.mjs';
 import { runStartupPatch } from './startup-patch.mjs';
@@ -81,8 +80,6 @@ process.env.NPM_CONFIG_GLOBALCONFIG = join(npmPrefix, 'etc', 'npmrc');
 process.env.NODE_PATH = join(npmPrefix, 'node_modules');
 process.env.DSH_PAPER_PROJECT_DIR = PROJECT_ROOT;
 process.env.PAPER_DATA_ROOT = dataRoot;
-const resolvedModelEnv = resolvePaperModelEnv(process.env);
-Object.assign(process.env, resolvedModelEnv);
 
 const synced = await syncDshRuntime();
 console.log(`论文平台配置已同步（${synced.skills} 个 skills）。`);

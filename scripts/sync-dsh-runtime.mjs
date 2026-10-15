@@ -7,6 +7,7 @@ import { parse, parseDocument, stringify } from 'yaml';
 
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
 import { assertSharedRuntimeCompatible } from './shared-runtime-guard.mjs';
+import { lockInstalledModelRouting, verifyModelRouting } from './verify-model-routing.mjs';
 
 const DSH_HOME = resolve(process.env.DSH_HOME || join(homedir(), '.dsh'));
 const PROVIDER_CREDENTIAL_ENV = {
@@ -36,13 +37,25 @@ async function copyRuntimeFile(source, target) {
   await cp(source, target, { force: true, recursive: true });
 }
 
-async function copyRenderedRuntimeFile(source, target) {
+async function copyRenderedRuntimeFile(source, target, preserveModels = false) {
+  const previous = preserveModels && existsSync(target) ? await readFile(target, 'utf8') : undefined;
+  let sourceText = preserveModels ? await readFile(source, 'utf8') : undefined;
+  if (previous) {
+    const document = parseDocument(sourceText, { logLevel: 'silent' });
+    const installed = parseDocument(previous, { logLevel: 'silent' });
+    if (document.errors.length || installed.errors.length) throw new Error('Invalid model profile; synchronization stopped.');
+    const index = document.toJSON().findIndex((entry) => entry.id === 'llm-pi-ai');
+    const installedIndex = installed.toJSON().findIndex((entry) => entry.id === 'llm-pi-ai');
+    if (index < 0 || installedIndex < 0) throw new Error('Model provider block missing; synchronization stopped.');
+    document.setIn([index], installed.getIn([installedIndex]).clone());
+    sourceText = document.toString().replace(/\r?\n/g, previous.includes('\r\n') ? '\r\n' : '\n');
+  }
   await copyRuntimeFile(source, target);
-  const content = await readFile(target, 'utf8');
+  const content = sourceText ?? await readFile(target, 'utf8');
   const rendered = content
     .replaceAll('__DSH_PAPER_PROJECT_DIR__', PROJECT_ROOT)
     .replaceAll('__PAPER_DATA_ROOT__', resolveDataRoot());
-  if (rendered !== content) await writeFile(target, rendered, 'utf8');
+  if (sourceText !== undefined || rendered !== content) await writeFile(target, rendered, 'utf8');
 }
 
 async function removeConflictingFlatSkill(targetRoot, skillName) {
@@ -227,7 +240,12 @@ export async function syncAgentPresets(profileTarget) {
   return declarations.length;
 }
 
-export async function syncDshRuntime() {
+export async function syncDshRuntime({ allowModelRoutingDrift = false } = {}) {
+  verifyModelRouting({
+    projectRoot: PROJECT_ROOT,
+    dshHome: DSH_HOME,
+    allowRuntimeDrift: allowModelRoutingDrift,
+  });
   assertSharedRuntimeCompatible(PROJECT_ROOT, DSH_HOME);
   const skillSource = join(PROJECT_ROOT, '.dsh', 'skills');
   const skillTarget = join(DSH_HOME, 'skills');
@@ -240,8 +258,9 @@ export async function syncDshRuntime() {
 
   const profileSource = join(PROJECT_ROOT, 'config', 'dsh', 'web');
   const profileTarget = join(DSH_HOME, 'profiles', 'web');
-  for (const file of ['paper-command.js', 'paper-phases.js', 'paper-feedback.js', 'academic-search.js', 'research-memory.js', 'model-router.js', 'manuscript-authors.mjs', 'cordis.patch.yml']) {
-    await copyRenderedRuntimeFile(join(profileSource, file), join(profileTarget, file));
+  for (const file of ['paper-command.js', 'paper-phases.js', 'paper-feedback.js', 'academic-search.js', 'research-memory.js', 'model-router.js', 'model-credentials.js', 'manuscript-authors.mjs', 'cordis.patch.yml']) {
+    if (file === 'model-router.js' && !allowModelRoutingDrift && existsSync(join(profileTarget, file))) continue;
+    await copyRenderedRuntimeFile(join(profileSource, file), join(profileTarget, file), file === 'cordis.patch.yml' && !allowModelRoutingDrift);
   }
   const presets = await syncAgentPresets(profileTarget);
 
@@ -254,11 +273,14 @@ export async function syncDshRuntime() {
   // API 配置收敛：provider 定义只存在 cordis.patch.yml（权威源），
   // 不再向 settings.yaml 写入 providers 副本，避免多份配置互相覆盖。
   const repairedDefaultModel = await repairMissingDefaultModelCredential();
+  lockInstalledModelRouting(PROJECT_ROOT, DSH_HOME, allowModelRoutingDrift);
   return { dshHome: DSH_HOME, skills: skills.length, presets, repairedDefaultModel };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await syncDshRuntime();
+  const result = await syncDshRuntime({
+    allowModelRoutingDrift: process.argv.includes('--sync-model-routing'),
+  });
   console.log(`DSH 运行时已同步: ${result.skills} 个论文 skills -> ${result.dshHome}`);
   console.log(`DSH agent 预设已同步: ${result.presets} 套`);
   if (result.repairedDefaultModel) console.log('已将缺少凭据的默认模型重置为 DeepSeek 默认模型。');

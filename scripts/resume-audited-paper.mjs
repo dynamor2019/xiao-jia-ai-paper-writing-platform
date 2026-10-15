@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './project-env.mjs';
 import dns from 'node:dns';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';

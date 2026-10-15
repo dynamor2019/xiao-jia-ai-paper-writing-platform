@@ -1,10 +1,12 @@
-import 'dotenv/config';
-
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
+import { ensureSetupModelDependencies, loadSetupPaths } from './setup-model-dependencies.mjs';
+
+loadSetupPaths(PROJECT_ROOT);
 
 const isWindows = process.platform === 'win32';
 const args = new Set(process.argv.slice(2));
@@ -107,20 +109,18 @@ function ensureEnvFile() {
   }
 }
 
-function ensureNodeDependencies() {
-  const requiredModules = [
-    join(PROJECT_ROOT, 'node_modules', '@deepseek-ai', 'dsh'),
-    join(PROJECT_ROOT, 'node_modules', 'electron'),
-  ];
-  const missingModules = requiredModules.filter((modulePath) => !existsSync(modulePath));
-  if (existsSync(join(PROJECT_ROOT, 'node_modules')) && missingModules.length === 0) {
-    log('Node 依赖已存在，跳过 npm install。');
-    return;
-  }
-
-  log('正在安装 Node 依赖，首次安装可能需要几分钟...');
-  const result = run('npm', ['install', '--cache', npmCacheRoot]);
-  if (result.status !== 0) fail('npm install 失败，请检查网络或 Node.js/npm 安装。');
+async function ensureNodeDependencies() {
+  const result = await ensureSetupModelDependencies({
+    projectRoot: PROJECT_ROOT,
+    dshHome: process.env.DSH_HOME || join(homedir(), '.dsh'),
+    skipInstall: args.has('--skip-install'),
+    run: (_cwd, commandArgs) => {
+      log('正在按锁文件安装 Node 依赖...');
+      const installed = run('npm', [...commandArgs, '--cache', npmCacheRoot]);
+      if (installed.status !== 0) throw new Error('npm ci failed; model baseline was not accepted');
+    },
+  });
+  log(result.installed ? 'Node 依赖安装完成，模型依赖基线已建立。' : 'Node 依赖与模型锁已核验，未重新安装。');
 }
 
 function runRequiredStep(label, command, commandArgs) {
@@ -197,7 +197,7 @@ if (args.has('--pylustrator-only')) {
 
 ensureEnvFile();
 
-if (!args.has('--skip-install')) ensureNodeDependencies();
+await ensureNodeDependencies();
 runRequiredStep('正在连接项目数据目录...', 'node', ['scripts/link-dsh-data-root.mjs']);
 
 if (!args.has('--skip-optional')) {

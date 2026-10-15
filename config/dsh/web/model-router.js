@@ -1,16 +1,16 @@
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const name = 'paper-web-model-router';
-const inject = ['llm', 'agentDefaultModel'];
+const inject = ['llm', 'agentDefaultModel', 'credentials'];
 const PROJECT_DIR = resolve(process.env.DSH_PAPER_PROJECT_DIR || String.raw`__DSH_PAPER_PROJECT_DIR__`);
-const DEFAULT_ROUTE = { provider: 'rayinai', model: 'gpt-5.6-luna' };
-const PROVIDERS = { openai: 'rayinai', claude: 'rayinai-claude' };
-const PROVIDER_KEYS = { rayinai: 'OPENAI_API_KEY', 'rayinai-claude': 'ANTHROPIC_API_KEY' };
-const SAFE_ROUTE = { provider: 'deepseek-official', model: 'deepseek-v4-flash' };
+const PROVIDERS = { openai: 'rayinai', claude: 'rayinai-claude', grok: 'sub2api-grok', deepseek: 'deepseek-official' };
+const PROVIDER_KEYS = { rayinai: 'OPENAI_API_KEY', 'rayinai-claude': 'ANTHROPIC_API_KEY',
+  'sub2api-grok': 'SUB2API_API_KEY', 'deepseek-official': 'DEEPSEEK_API_KEY' };
 const TASK_PATTERNS = [
-  ['citation', /引用核验|核对引用|参考文献|citation|doi/i],
+  ['citation', /引用核验|核对引用|参考文献|citation|\bdoi\b/i],
   ['quality', /审稿|论文质量|科学审查|质量门禁|peer.review|review.*paper/i],
   ['protocol', /研究方案|实验设计|识别策略|因果推断|预分析计划|research protocol|study design/i],
   ['discovery', /选题|研究方向|创新点|research topic|research direction/i],
@@ -28,6 +28,7 @@ export function classifyWebTask(text) {
 function admittedUserText(messages) {
   return messages
     .filter((message) => message.source?.kind === 'user')
+    .slice(-1)
     .flatMap((message) => message.content || [])
     .filter((block) => block.type === 'text')
     .map((block) => block.text)
@@ -44,24 +45,23 @@ function hasManualSelection(session, scanned) {
   return manual;
 }
 
-function firstAvailableRoute(ctx, candidates) {
+async function firstAvailableRoute(ctx, candidates, credentialRefFor) {
   const registered = ctx.get?.('llm')?.listProviders?.();
   for (const candidate of candidates) {
     const provider = PROVIDERS[candidate.provider];
-    if (provider && candidate.model && providerHasCredential(provider) && (!registered || registered.some((item) => item.id === provider))) {
+    if (provider && candidate.model && await providerHasCredential(ctx, provider, credentialRefFor) && (!registered || registered.some((item) => item.id === provider))) {
       return { provider, model: candidate.model };
     }
   }
   return undefined;
 }
 
-function providerHasCredential(provider) {
-  const envName = PROVIDER_KEYS[provider];
-  return !envName || Boolean(process.env[envName]?.trim());
-}
-
-function defaultRoute() {
-  return providerHasCredential(DEFAULT_ROUTE.provider) ? DEFAULT_ROUTE : undefined;
+async function providerHasCredential(ctx, provider, credentialRefFor) {
+  const envName = await credentialRefFor(provider);
+  if (!envName) return true;
+  const credentials = ctx.get?.('credentials');
+  if (credentials) return Boolean((await credentials.resolve(envName))?.value?.trim());
+  return Boolean(process.env[envName]?.trim());
 }
 
 function canFailOver(failure) {
@@ -74,7 +74,7 @@ function modelIsUnavailable(failure) {
     || /model.*(?:not\s+supported|not found|unsupported|unavailable)/i.test(failure?.message || '');
 }
 
-export function installWebModelRouter(ctx, routeCandidates) {
+export function installWebModelRouter(ctx, routeCandidates, credentialRefFor = (provider) => PROVIDER_KEYS[provider]) {
   const activeTasks = new WeakMap();
   const scanned = new WeakMap();
   const attempted = new WeakMap();
@@ -87,7 +87,7 @@ export function installWebModelRouter(ctx, routeCandidates) {
     const pending = recovery.get(agent);
     const route = pending?.turn === turn && pending.step === step
       ? pending.route
-      : firstAvailableRoute(ctx, candidates) || defaultRoute();
+      : await firstAvailableRoute(ctx, candidates, credentialRefFor);
     if (!route) return undefined;
     return { task, route };
   }
@@ -117,9 +117,7 @@ export function installWebModelRouter(ctx, routeCandidates) {
     }
     const selected = await selectedRoute(agent, turn, step);
     if (!selected) {
-      const route = config?.model === 'claude-sonnet-5-5' && config.provider === 'rayinai-claude'
-        ? { ...config, model: 'claude-sonnet-5' }
-        : config;
+      const route = config;
       attempted.set(agent, { turn, step, route });
       return route;
     }
@@ -135,18 +133,20 @@ export function installWebModelRouter(ctx, routeCandidates) {
     const last = attempted.get(agent);
     const task = activeTasks.get(agent)?.turn === turn ? activeTasks.get(agent).task : undefined;
     if (last?.turn !== turn || last.step !== step || !canFailOver(failure)
-      || (hasManualSelection(agent.session, scanned) && !modelIsUnavailable(failure))) return next();
+      || hasManualSelection(agent.session, scanned)) return next();
+    const previous = recovery.get(agent);
+    const visited = previous?.turn === turn && previous.step === step ? previous.visited : new Set();
+    visited.add(`${last.route.provider}/${last.route.model}`);
+    if (visited.size >= 3) return next();
     const candidates = task ? await routeCandidates(task) : [];
     const used = candidates.findIndex((item) => PROVIDERS[item.provider] === last.route.provider && item.model === last.route.model);
     const remaining = used < 0
       ? candidates.filter((item) => PROVIDERS[item.provider] !== last.route.provider || item.model !== last.route.model)
       : candidates.slice(used + 1);
-    const fallback = firstAvailableRoute(ctx, remaining)
-      || (modelIsUnavailable(failure) && last.route.provider === 'rayinai-claude' && last.route.model === 'claude-sonnet-5-5'
-        ? { provider: 'rayinai-claude', model: 'claude-sonnet-5' }
-        : undefined);
+    const fallback = await firstAvailableRoute(ctx, remaining.filter((item) =>
+      !visited.has(`${PROVIDERS[item.provider]}/${item.model}`)), credentialRefFor);
     if (!fallback || (fallback.provider === last.route.provider && fallback.model === last.route.model)) return next();
-    recovery.set(agent, { turn, step, route: fallback });
+    recovery.set(agent, { turn, step, route: fallback, visited });
     ctx.logger?.warn?.(`Web 模型回退: ${last.route.provider}/${last.route.model} -> ${fallback.provider}/${fallback.model}`);
     return { kind: 'retry' };
   });
@@ -160,14 +160,22 @@ export function installWebModelRouter(ctx, routeCandidates) {
   });
 }
 
-function apply(ctx) {
+async function apply(ctx) {
   const routeFile = join(PROJECT_DIR, 'dist', 'config', 'model-routing.js');
   if (!existsSync(routeFile)) {
     ctx.logger?.warn?.(`Web 模型路由未启用：缺少 ${routeFile}，请先运行 npm run build`);
     return;
   }
   const routing = import(pathToFileURL(routeFile).href);
-  installWebModelRouter(ctx, async (task) => (await routing).getRouteCandidates(task));
+  const settings = import(pathToFileURL(join(PROJECT_DIR, 'scripts', 'model-credentials.mjs')).href);
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh');
+  installWebModelRouter(ctx, async (task) => (await routing).getRouteCandidates(task), async (provider) => {
+    if (provider === 'deepseek-official') return (await settings).readDeepSeekProvider(home, PROJECT_DIR).apiKeyEnv;
+    const profile = (await settings).readModelProviders(home, PROJECT_DIR)[provider];
+    return profile ? profile.apiKeyEnv : PROVIDER_KEYS[provider];
+  });
+  const budget = await import(pathToFileURL(join(PROJECT_DIR, 'scripts', 'model-request-budget.mjs')).href);
+  budget.installModelRequestBudget(ctx);
 }
 
 export { name, inject, apply };

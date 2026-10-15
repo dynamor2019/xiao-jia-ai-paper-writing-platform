@@ -57,16 +57,16 @@ if (-not (Test-Path -LiteralPath ".env") -and (Test-Path -LiteralPath ".env.exam
 $env:PAPER_DATA_ROOT = $DataRoot
 $env:PAPER_STATE_DIR = ".dsh-state"
 
+if ($SkipInstall -and -not (Test-Path -LiteralPath "node_modules")) {
+  throw "Dependencies are missing and installation was explicitly skipped."
+}
+$env:NPM_CONFIG_CACHE = $npmCacheRoot
+node scripts/setup-model-dependencies.mjs
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 node scripts/link-dsh-data-root.mjs
 node scripts/install-figures4papers.mjs
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-pylustrator.ps1 -SkipIfInstalled
-
-if (-not $SkipInstall) {
-  if (-not (Test-Path -LiteralPath "node_modules")) {
-    Write-Host "Installing Node dependencies..." -ForegroundColor Cyan
-    npm install --cache $npmCacheRoot
-  }
-}
 
 Write-Host "DSH data root ready: $DataRoot" -ForegroundColor Green
 Write-Host "Node.js: $(node -v), npm: $(npm -v)" -ForegroundColor Green

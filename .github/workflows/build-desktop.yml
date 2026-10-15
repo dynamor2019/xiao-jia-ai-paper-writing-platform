@@ -40,6 +40,12 @@ jobs:
       - name: Test paper workflows
         run: npm test
 
+      - name: Test startup and model routing locks
+        run: npm run test:startup
+
+      - name: Test model calls and upgrade protection
+        run: npm run test:models
+
       - name: Package desktop app
         run: npm run desktop:pack:github
 
