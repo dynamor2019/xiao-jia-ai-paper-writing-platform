@@ -146,7 +146,7 @@ function registerTargetJournalContext(ctx) {
     text: ({ agent }) => {
       const run = agent && readRunState(agent);
       return run?.outputDir
-        ? `本对话只绑定 ${run.outputDir}。未关闭 work-chain.json 前不要另开流水线。查状态或恢复用 continue_paper_workflow，不要另跑 npm run paper。`
+        ? `本对话只绑定 ${run.outputDir}。未关闭 work-chain.json 前不要另开流水线。查状态或恢复用 continue_paper_workflow，不要另跑 npm run paper。文档规则：原始证据、实验程序与结果引用、稿件、必要门禁报告必须保留；只有研究方案、数据证据、结论或实际阻塞发生实质变化时才更新对应台账。普通进度、重试、检查和无变化结论只写会话或运行日志，不另建说明文档，也不调用模型专门总结这些操作。同一用途固定一个文件并按需更新，不按轮次或时间戳新增说明；仅关键方案变更或不可替代证据需要留历史版本。大型实验数据沿用共享区域，论文目录仅保存引用与哈希。`
         : '本对话未绑定论文项目。只有用户明确要求写论文时才调用 start_paper_workflow；其他对话不要注入论文流程。';
     },
   });
@@ -317,7 +317,13 @@ function runLogPath(agent) {
 }
 
 function createConversationProjectDir(agent) {
-  return join(OUTPUT_DIR, 'paper-projects', paperProjectId(agent));
+  return join(OUTPUT_DIR, 'papers', paperProjectId(agent));
+}
+
+function resolveProjectDir(projectId) {
+  const current = join(OUTPUT_DIR, 'papers', projectId);
+  if (existsSync(current)) return current;
+  return join(OUTPUT_DIR, 'paper-projects', projectId);
 }
 
 function activeProjectId(agent) {
@@ -506,6 +512,7 @@ async function initializeResearchWorkspace(topic, journalId, agent) {
     'publication-record.md': `# Publication Record\r\n\r\n- 目标期刊：${journalName}\r\n- 投稿日期：待填写\r\n- Manuscript ID：待填写\r\n- 编辑决定：未投稿\r\n- 审稿轮次：0\r\n- 接收日期：待填写\r\n- DOI / 正式链接：待填写\r\n`,
   };
   for (const [file, content] of Object.entries(templates)) {
+    if (file !== 'research-brief.md' && file !== 'revision-log.md') continue;
     if (createFileIfMissing(join(milestoneDir, file), content)) created.push(file);
   }
   writeFileSync(join(outputDir, '.dsh-state', 'research-workspace.json'), JSON.stringify({ topic, journalId, journalName, outputDir, paperProjectId: activeProjectId(agent), updatedAt: new Date().toISOString() }, null, 2), 'utf8');
@@ -1200,7 +1207,7 @@ function apply(ctx) {
       const projectId = invocation.rawInput?.trim() || '';
       if (!/^paper-[a-zA-Z0-9_-]+$/.test(projectId)) return { kind: 'error', text: '请填写有效的论文项目 ID。' };
       if (readRunState(invocation.agent)?.outputDir) return { kind: 'error', text: '当前对话已绑定论文项目，请新建对话后再接入。' };
-      const outputDir = join(OUTPUT_DIR, 'paper-projects', projectId);
+      const outputDir = resolveProjectDir(projectId);
       const checkpoint = readPipelineState(outputDir);
       if (!checkpoint?.topic) return { kind: 'error', text: '未找到该项目的流水线检查点。' };
       const awaiting = APPROVAL_STAGES.has(checkpoint.metadata?.awaitingApproval);

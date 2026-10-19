@@ -1793,7 +1793,7 @@ function buildCoverLetterTemplate(options: {
 
 function createPaperOutputDir(topic: string, paperProjectId?: string): string {
   if (paperProjectId) {
-    return join(paperOutputRoot(), 'paper-projects', safeFileBase(paperProjectId));
+    return join(paperOutputRoot(), 'papers', safeFileBase(paperProjectId));
   }
   const now = new Date();
   const stamp = [

@@ -29,6 +29,16 @@ const SYSTEM_PROMPT = `你是一位严格的学术论文共同作者，擅长把
 
 ${ACADEMIC_STYLE_INSTRUCTIONS}`;
 
+export const SECTION_REQUEST_PREFIX = `请严格按照系统中的学术写作要求处理下面的动态任务字段。
+只输出正文，不输出标题、提纲、计划、过程说明或元话语；所有定量主张必须来自随后提供的已验收实验结果。
+
+动态任务字段：`;
+
+export const PARAGRAPH_REQUEST_PREFIX = `请严格按照系统中的学术写作要求，只输出一个可直接追加到论文文件的完整正文段落。
+不要输出标题、提纲、写作计划、过程说明或元话语；不要重复已保存内容；所有定量主张必须来自随后提供的已验收实验结果。
+
+动态任务字段：`;
+
 export interface WriteSectionOptions {
   previousSections?: Section[]; // 已完成的前文（用于上下文衔接）
   papers: Paper[];
@@ -74,7 +84,7 @@ export async function writeSection(
       })
       .join('\n\n');
 
-    const userPrompt = `请撰写以下论文小节的正文。
+    const userPrompt = `${SECTION_REQUEST_PREFIX}
 
 小节标题：${node.title}
 核心论点：${node.argument || '请根据标题自行展开'}
@@ -136,7 +146,9 @@ export async function writeSectionParagraph(
     const currentSection = options.currentSection?.trim();
     const literatureSupport = buildLiteratureSupport(node, options.papers, options.notes);
 
-    const userPrompt = `只撰写下面小节的第 ${options.paragraphIndex}/${options.totalParagraphs} 个正文段落。
+    const userPrompt = `${PARAGRAPH_REQUEST_PREFIX}
+
+段落位置：第 ${options.paragraphIndex}/${options.totalParagraphs}
 
 小节标题：${node.title}
 核心论点：${node.argument || '请根据标题和证据展开'}
@@ -155,7 +167,7 @@ ${literatureSupport || '（无指定文献，不得编造具体引用）'}
 已验收实验结果（定量主张只能逐字追溯到这里）：
 ${options.evidenceContext || '（未提供实验结果，不得写新的实验数字或统计结论）'}
 
-只输出一个可直接追加到论文文件的完整段落。不要输出标题、提纲、写作计划、过程说明或“我将/正在写”等元话语；不要重复已保存内容。引用使用 [序号]。`;
+引用使用 [序号]。`;
 
     const content = await client.generate(SYSTEM_PROMPT, userPrompt, {
       task: 'writing',
