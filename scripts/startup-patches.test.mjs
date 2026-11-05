@@ -114,14 +114,15 @@ for (const modern of [false, true]) {
 const promptLegacy = 'Use the edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_string with new_string; by default old_string must appear exactly once. If old_string appears multiple times, provide a more specific old_string or set replace_all to true. Read the file first (the default fs-observation-policy requires it), unless you just created or edited it in this session.';
 const promptModern = 'Read a file before editing it (the default fs-observation-policy requires it), unless you just created or edited it in this session.';
 
-for (const modern of [false, true]) {
-  test(`edit recovery supports ${modern ? 'function' : 'mapping'} errors`, () => fixtureFiles((directory) => {
+for (const modern of [false, true, 'current']) {
+  test(`edit recovery supports ${modern === 'current' ? 'current prompt' : modern ? 'function' : 'mapping'} errors`, () => fixtureFiles((directory) => {
     const toolFsTarget = join(directory, 'tool.js');
     const fsLocalTarget = join(directory, 'local.js');
     const remedies = modern
       ? 'function remediateFsError(error, displayPath) {\n\tif (error.code === "FS_STALE_VERSION") return error;\n\treturn error;\n}'
       : 'const REMEDIES = {\n\tFS_STALE_VERSION: "re-read the file, then retry",\n\tFS_NOT_OBSERVED: "read the file, then retry"\n};';
-    writeFileSync(toolFsTarget, `${remedies}\nconst prompt = ${JSON.stringify(modern ? promptModern : promptLegacy)};\nconst description = ${JSON.stringify(modern ? 'Literal text to replace.' : 'Literal text to replace. Must match exactly.')};`);
+    const prompt = modern === 'current' ? 'Read a file before editing it unless you just created or edited it in this session.' : modern ? promptModern : promptLegacy;
+    writeFileSync(toolFsTarget, `${remedies}\nconst prompt = ${JSON.stringify(prompt)};\nconst description = ${JSON.stringify(modern ? 'Literal text to replace.' : 'Literal text to replace. Must match exactly.')};`);
     writeFileSync(fsLocalTarget, 'function applyLiteralEdit(content, oldString, newString, replaceAll, displayPath) {\nconst oldNorm = oldString, newNorm = newString, replacements = 0;\nif (replacements === 0) throw new FsError(`old_string was not found in "${displayPath}"`, "FS_EDIT_NOT_FOUND");\n}');
     assert.equal(patchEditRecovery({ toolFsTarget, fsLocalTarget }), true);
     assert.equal(patchEditRecovery({ toolFsTarget, fsLocalTarget }), false);
@@ -141,6 +142,16 @@ for (const modern of [false, true]) {
     assert.equal(edit('different', 'a b', 'c', false, 'test'), undefined);
   }));
 }
+
+test('quick continue supports the new sending-state guard without changing its stop logic', () => fixtureFiles((directory) => {
+  const path = join(directory, 'sending.js');
+  const source = clientFixture(true).replace('const machineBusy = false,', 'const sending = false, machineBusy = false,')
+    .replace('running && subagent === null && (empty', 'running && subagent === null && !sending && (empty');
+  writeFileSync(path, source);
+  assert.equal(patchContinueButton(path), true);
+  assert.match(readFileSync(path, 'utf8'), /primaryStops = running && subagent === null && !sending/);
+  assert.equal(patchContinueButton(path), false);
+}));
 
 test('unknown UI layout does not write a partially patched bundle', () => fixtureFiles((directory) => {
   const path = join(directory, 'unknown.js');

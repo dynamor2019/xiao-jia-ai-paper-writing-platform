@@ -7,6 +7,15 @@ const PATCHED_DESCRIPTION = 'description: "Execute a saved Univer Facade JavaScr
 const ORIGINAL_PARAMETERS = `      code: { type: "string", description: "Small Facade API JavaScript snippet. Mutually exclusive with codeFile." },
       codeFile: { type: "string", description: "Workspace-relative or absolute JavaScript body file to execute. Preferred for multi-line code; mutually exclusive with code." },`;
 const PATCHED_PARAMETERS = '      codeFile: { type: "string", required: true, description: "Workspace-relative or absolute JavaScript body file to execute." },';
+const CURRENT_DESCRIPTION = 'description: "Execute Univer Facade JavaScript and commit mutations to a draft agent worktree. Use code only for a small snippet and codeFile for multiline or reusable code. Provide exactly one source.';
+const CURRENT_PARAMETERS = `      code: {
+        type: "string",
+        description: "Inline Facade code; use codeFile for multiline code. Mutually exclusive with codeFile."
+      },
+      codeFile: {
+        type: "string",
+        description: "Workspace-relative or absolute multiline Facade JavaScript body file. Mutually exclusive with code."
+      },`;
 const ORIGINAL_INSPECT_RANGE = '        ...args.range === void 0 ? {} : { range: args.range },';
 const PATCHED_INSPECT_RANGE = '        ...typeof args.range !== "string" || args.range.trim().length === 0 ? {} : { range: args.range },';
 
@@ -19,7 +28,14 @@ const REPLACEMENTS = [
 function patchRuntime(filePath) {
   const source = readFileSync(filePath, 'utf8');
   let patched = source;
+  if (patched.includes(CURRENT_DESCRIPTION)) {
+    patched = patched.replace(CURRENT_DESCRIPTION,
+      'description: "Execute a saved Univer Facade JavaScript file and commit mutations to a draft agent worktree. Save the program first, then provide codeFile.');
+    if (!patched.includes(CURRENT_PARAMETERS)) throw new Error(`Unknown Univer file parameter layout: ${filePath}`);
+    patched = patched.replace(CURRENT_PARAMETERS, PATCHED_PARAMETERS);
+  }
   for (const [original, replacement] of REPLACEMENTS) {
+    if (original === ORIGINAL_DESCRIPTION && patched.includes('Save the program first, then provide codeFile.')) continue;
     if (patched.includes(replacement)) {
       continue;
     }

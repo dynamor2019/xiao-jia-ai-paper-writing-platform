@@ -7,6 +7,7 @@
  *   /paper <选题> --journal <期刊ID> # 按目标期刊要求写作
  */
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, basename, dirname, extname, relative, resolve, sep } from 'node:path';
@@ -434,9 +435,39 @@ function renderDocxPreview(docxPath) {
 }
 
 function isManuscriptMarkdown(file) {
-  return file.toLowerCase().endsWith('.md')
-    && !/^(agents|readme)\.md$/i.test(file)
-    && !/(quality-report|scientific-review|citation-verification|research-brief|claim-evidence|analysis-plan|data-validation|topic-discovery|submission|revision-log|publication-record|references|tables)/i.test(file);
+  const name = basename(file.replaceAll('\\', '/'));
+  return /^(?:manuscript(?:[-_].*)?|paper[-_]full|paper[-_]final)\.md$/i.test(name)
+    || (name.toLowerCase().endsWith('.md')
+      && !/^(?:agents|readme)(?:[_.-]|$)/i.test(name)
+      && !/(quality-report|scientific-review|citation-verification|research-brief|claim-evidence|analysis-plan|data-validation|topic-discovery|submission|revision-log|publication-record|references|tables|cover[-_ ]letter|highlights|report|review|prompt|proposal|statement|declaration|summary)/i.test(name));
+}
+
+/** Prefer the canonical article over newer supporting notes in the same package. */
+function findManuscriptArtifact(artifacts) {
+  return artifacts.find((row) => /^(?:manuscript|paper[-_]full|paper[-_]final)\.md$/i.test(basename(row.path)))
+    || artifacts.find((row) => isManuscriptMarkdown(row.file));
+}
+
+/** Read only a content-bound review; historical reports cannot approve a changed article. */
+function currentManuscriptReview(manuscript, artifacts) {
+  if (!manuscript) return undefined;
+  const report = artifacts.find((row) => row.path === manuscript.path.replace(/\.md$/i, '.quality-report.md'));
+  if (!report) return undefined;
+  const text = readFileSync(report.path, 'utf8');
+  const sha256 = createHash('sha256').update(readFileSync(manuscript.path)).digest('hex');
+  if (!text.includes(`Manuscript SHA256: ${sha256}`)) return { status: 'stale', path: report.path };
+  const scientificClear = (text.match(/Manuscript gate:\s*CLEAR/g) || []).length >= 2
+    && /Review route:\s*qualityCrossReview/.test(text) && !/Manuscript gate:\s*BLOCKED/.test(text);
+  const metadataMatched = /# Reference Metadata Audit\s+Status:\s*PASS/.test(text);
+  const citationPath = join(dirname(manuscript.path), '.dsh-state', 'citation-support', 'current.json');
+  let citationReport;
+  try { citationReport = JSON.parse(readFileSync(citationPath, 'utf8')); } catch { citationReport = undefined; }
+  const citationSupportClear = citationReport?.sha256 === sha256 && citationReport.total > 0
+    && citationReport.results?.length === citationReport.total
+    && citationReport.results.every(result => result.status === 'verified');
+  const blocked = /(?:^|\n)Status:\s*BLOCKED|Manuscript gate:\s*BLOCKED/.test(text);
+  return { status: blocked ? 'blocked' : scientificClear && metadataMatched ? 'clear' : 'pending',
+    scientificClear, metadataMatched, citationSupportClear, citationCount: citationReport?.total, sha256, path: report.path };
 }
 
 async function resolveValidationTargets(rawInput, agent) {
@@ -445,7 +476,7 @@ async function resolveValidationTargets(rawInput, agent) {
   const docxArg = args.find((arg) => arg.toLowerCase().endsWith('.docx'));
   const artifacts = await listOutputArtifacts(activePaperDir(agent));
   const markdown = markdownArg
-    || artifacts.find((row) => isManuscriptMarkdown(row.file))?.path;
+    || findManuscriptArtifact(artifacts)?.path;
   if (!markdown || !existsSync(markdown)) return { error: '未找到可校验的 Markdown 论文，请先生成或在命令后指定 .md 文件路径。' };
   const pairedDocx = markdown.replace(/\.md$/i, '.docx');
   const docx = docxArg || (existsSync(pairedDocx) ? pairedDocx : artifacts.find((row) => row.file.toLowerCase().endsWith('.docx'))?.path);
@@ -651,6 +682,9 @@ function reconcileRunState(agent) {
     run.status = 'awaiting-confirmation';
     run.stage = checkpoint.metadata.awaitingApproval;
     run.pid = undefined;
+  } else if (run.status === 'failed' && run.stage !== checkpoint.stage) {
+    run.stage = checkpoint.stage;
+    run.error = '历史会话错误已过期，请以当前项目检查点和检查报告为准。';
   } else if (run.status === 'running' || (run.status === 'awaiting-confirmation' && run.stage !== checkpoint.stage)) {
     run.status = 'failed';
     run.stage = checkpoint.stage || run.stage;
@@ -933,10 +967,14 @@ async function workbenchSnapshot(agent) {
   const quality = qualityTexts.length === 0 ? '未运行'
     : qualityTexts.some((value) => /\bBLOCKED\b|Verdict:\s*(?:major revision|reject)/i.test(value)) ? 'BLOCKED'
       : qualityReports.some((row, index) => /paper-quality-report/i.test(row.file) && /\bPASS\b|Verdict:\s*pass/i.test(qualityTexts[index])) ? 'PASS' : '需复核';
-  const manuscript = deliverables.find((row) => isManuscriptMarkdown(row.file));
-  const word = deliverables.find((row) => row.file.toLowerCase().endsWith('.docx') && !row.file.startsWith('~$'));
+  const manuscript = findManuscriptArtifact(deliverables);
+  const currentReview = currentManuscriptReview(manuscript, artifacts);
+  const word = manuscript && deliverables.find((row) => row.path === manuscript.path.replace(/\.md$/i, '.docx'));
   const workspace = readWorkspaceState(agent);
   const pipeline = readPipelineState(baseDir);
+  const manuscriptPrepared = Boolean(manuscript && word
+    && pipeline?.metadata?.workflow?.tasks?.['manuscript-completion']?.status === 'complete'
+    && pipeline?.metadata?.workflow?.tasks?.export?.status === 'complete');
   const openFeedback = readFeedback(baseDir).filter((item) => item.status === 'open').length;
   const runStatus = running ? 'running' : state.status;
   const pipelineStage = pipeline?.stage || (WORKBENCH_STAGE_LABELS.some(([id]) => id === state.stage) ? state.stage : 'project-intake');
@@ -946,7 +984,7 @@ async function workbenchSnapshot(agent) {
     if (tasks) {
       const task = tasks[id];
       const recordedStatus = { complete: 'complete', running: 'active', waiting: 'active', degraded: 'degraded', failed: 'error' }[task?.status] || 'pending';
-      const status = id === pipelineStage && runStatus === 'failed' ? 'error' : recordedStatus;
+      const status = id === pipelineStage && runStatus === 'failed' && !['complete', 'degraded'].includes(recordedStatus) ? 'error' : recordedStatus;
       return { id, label, passed: status === 'complete', status, detail: task?.error || '' };
     }
     let status = index < currentIndex ? 'complete' : 'pending';
@@ -956,9 +994,42 @@ async function workbenchSnapshot(agent) {
     return { id, label, passed: status === 'complete', status };
   });
   const phases = groupWorkbenchPhases(stages);
+  if (manuscriptPrepared && !running) {
+    for (const phase of phases) {
+      if (!['writing', 'gates'].includes(phase.id)) continue;
+      const taskIds = WORKBENCH_PHASES.find(([id]) => id === phase.id)[2];
+      const failures = stages.filter((stage) => taskIds.includes(stage.id) && stage.status === 'error');
+      const unrunOnly = failures.length > 0 && failures.every((stage) =>
+        stage.id === 'literature-search' && /pipeline search failed and was not rerun/i.test(stage.detail)
+        || stage.id === 'citation-verification' && /references were not re-verified/i.test(stage.detail));
+      if (!unrunOnly) continue;
+      phase.status = 'degraded';
+      phase.passed = false;
+      phase.detail = phase.id === 'writing'
+        ? '正文与 Word 已生成；历史检索未重跑，不代表稿件写作失败。引用在独立核验阶段处理。'
+        : '当前稿件的引用与科学复核待执行；尚未核验不代表已发现论文错误。';
+    }
+  }
+  if (manuscriptPrepared && !running && currentReview) {
+    const writing = phases.find((phase) => phase.id === 'writing');
+    const gates = phases.find((phase) => phase.id === 'gates');
+    if (currentReview.status === 'clear') {
+      Object.assign(writing, { status: 'complete', passed: true, detail: '当前稿件及 Word 已生成，已通过内容绑定的双路科学复审。' });
+      Object.assign(gates, { status: currentReview.citationSupportClear ? 'complete' : 'degraded', passed: currentReview.citationSupportClear,
+        detail: currentReview.citationSupportClear ? `双路科学复审及${currentReview.citationCount}处引用支撑核验通过；作者签字和来源权限仍属于投稿前待办。`
+          : '双路科学复审通过；DOI题名与年份已核对。逐句引用支撑和投稿权限仍需独立核验。' });
+    } else if (currentReview.status === 'blocked') {
+      Object.assign(gates, { status: 'error', passed: false, detail: `当前稿件存在未通过检查，请查看 ${currentReview.path}` });
+    } else if (currentReview.status === 'stale') {
+      Object.assign(gates, { status: 'degraded', passed: false, detail: '稿件内容已改变，旧版审查不能证明当前版本通过。' });
+    }
+  }
   const completed = phases.filter((phase) => phase.passed).length;
   return {
     project: true,
+    manuscriptPrepared,
+    currentReview,
+    recordedStages: stages,
     topic: workspace?.topic || state.topic,
     recommendedTopic: pipeline?.topic,
     researchDirection: workspace?.researchDirection || state.researchDirection || pipeline?.metadata?.researchDirection || {},
@@ -995,9 +1066,10 @@ async function submissionText(agent) {
   const baseDir = activePaperDir(agent);
   if (!baseDir) return 'SUBMISSION BLOCKED\r\n- 尚未建立本对话的论文项目。';
   const artifacts = await listOutputArtifacts(baseDir);
-  const latestMarkdown = artifacts.find((row) => isManuscriptMarkdown(row.file));
-  const latestDocx = artifacts.find((row) => row.file.toLowerCase().endsWith('.docx') && !row.file.startsWith('~$'));
-  const report = artifacts.find((row) => /quality-report\.md$/i.test(row.file));
+  const latestMarkdown = findManuscriptArtifact(artifacts);
+  const latestDocx = latestMarkdown && artifacts.find((row) => row.path === latestMarkdown.path.replace(/\.md$/i, '.docx'));
+  const report = latestMarkdown && artifacts.find((row) => row.path === latestMarkdown.path.replace(/\.md$/i, '.quality-report.md'))
+    || artifacts.find((row) => /paper-quality-report\.md$/i.test(row.file));
   const reportText = report ? readFileSync(report.path, 'utf8') : '';
   const qualityPassed = Boolean(report) && /\bPASS\b|Verdict:\s*pass/i.test(reportText) && !/\bBLOCKED\b|Verdict:\s*(?:major revision|reject)/i.test(reportText);
   const openFeedback = readFeedback(baseDir).filter((item) => item.status === 'open').length;
@@ -1007,14 +1079,19 @@ async function submissionText(agent) {
     ['质量门禁 PASS', qualityPassed, report?.path],
     ['研究者异议已处理', openFeedback === 0, openFeedback ? `${openFeedback} 项待处理` : undefined],
     ['引用核验报告', artifacts.some((row) => /citation-verification/i.test(row.file))],
-    ['投稿清单', existsSync(join(baseDir, 'milestones', 'submission-manifest.md')), join(baseDir, 'milestones', 'submission-manifest.md')],
+    ['投稿清单', artifacts.some((row) => /(?:^|[\\/])submission-manifest\.md$/i.test(row.file))],
     ['Cover letter', artifacts.some((row) => /cover[-_ ]letter/i.test(row.file))],
     ['作者与研究声明', artifacts.some((row) => /(declaration|authorship|research-integrity)/i.test(row.file))],
-    ['修订追踪', existsSync(join(baseDir, 'milestones', 'revision-log.md')), join(baseDir, 'milestones', 'revision-log.md')],
-    ['投稿与发表记录', existsSync(join(baseDir, 'milestones', 'publication-record.md')), join(baseDir, 'milestones', 'publication-record.md')],
   ];
-  const ready = checks.every(([, passed]) => passed);
-  return [ready ? 'SUBMISSION READY' : 'SUBMISSION BLOCKED', ...checks.map(([label, passed, path]) => `- ${passed ? 'PASS' : 'BLOCKED'} ${label}${path ? `: ${path}` : ''}`), '', ready ? '投稿包已满足平台验收条件，仍需在期刊官网核对当天的易变要求。' : '先修复所有 BLOCKED 项，不得把生成文件等同于投稿完成。'].join('\r\n');
+  const manifest = artifacts.find((row) => /(?:^|[\\/])submission-manifest\.md$/i.test(row.file));
+  const manifestText = manifest ? readFileSync(manifest.path, 'utf8') : '';
+  const ready = checks.every(([, passed]) => passed)
+    && /READY FOR AUTHOR CONFIRMATION/.test(manifestText) && !/\bBLOCKED\b/.test(manifestText);
+  return [ready ? 'SUBMISSION READY' : 'SUBMISSION BLOCKED',
+    latestMarkdown && latestDocx ? '稿件与 Word 已生成；剩余核验不代表需要重新撰写全文。' : '',
+    ...checks.map(([label, passed, path]) => `- ${passed ? 'PASS' : 'BLOCKED'} ${label}${path ? `: ${path}` : ''}`),
+    '', manifestText ? `当前投稿清单：\n${manifestText}` : '缺少投稿清单，待核验。',
+    ready ? '仍需作者确认后自行投稿。' : '仅处理当前清单中的实际未完成项；历史失败不要求重跑已完成写作。'].filter(Boolean).join('\r\n');
 }
 
 async function confirmPaperStage(ctx, agent, decision = '') {

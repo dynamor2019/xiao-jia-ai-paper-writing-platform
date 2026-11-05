@@ -10,11 +10,13 @@
 
 ## 下载后快速启动
 
-### 方式一：直接下载桌面端 exe
+### 下载项目并在本地安装
 
-进入 GitHub 仓库的 **Actions** 或 **Releases** 页面，下载自动打包生成的 Windows 桌面端 zip，解压后双击里面的 `小贾AI科研论文写作平台.exe` 即可启动桌面窗口。
+GitHub 仅提供项目源码和依赖清单，不上传 `node_modules`、Electron 运行时、Python 虚拟环境、下载缓存、个人论文、API 密钥或个人数据。下载 Release 中的 `XiaoJiaAI-Source-v版本号.zip` 并解压，或克隆仓库，然后按下面步骤安装。
 
-### 方式二：克隆源码运行
+依赖说明见根目录 `requirements.txt`；Node.js 依赖及精确版本由 `package.json` 和 `package-lock.json` 管理，安装时通过 `npm ci` 下载，请勿用 `pip install -r requirements.txt` 安装主程序。桌面窗口所需 Electron 同样在用户本地安装。
+
+### 安装与启动
 
 1. 安装完整 Node.js LTS 20 或更高版本：<https://nodejs.org/>
 2. 双击根目录 `setup-dsh.bat`，自动安装依赖并准备 `%USERPROFILE%\Documents\XiaoJiaAI Data` 数据目录。
@@ -224,10 +226,12 @@ npm run web
 
 ### 打包 Windows 桌面端
 
-GitHub 已配置自动打包：
+GitHub 默认只发布项目包，不发布包含依赖的桌面安装包：
 
-- 手动打包：进入 GitHub 仓库 `Actions` -> `Build Desktop` -> `Run workflow`
-- 正式发布：推送 `v0.1.0` 这类 tag，GitHub 会自动创建 Release 并上传 Windows 桌面端 zip
+- 手动发布检查：进入仓库 `Actions` -> `Build Desktop` -> `Run workflow`
+- 正式发布：推送 `v0.1.8` 这类 tag，自动测试并生成源码 ZIP 与 SHA256 更新清单；构建机下载的依赖仅供测试，不上传到 Release。
+- 用户解压后运行 `setup-dsh.bat` 安装依赖，再运行启动 BAT；离线电脑需要预先准备相应依赖。
+- 下述本地桌面打包命令仅供开发者按需使用，生成的依赖和运行时不纳入默认发布。
 
 本地打包：
 

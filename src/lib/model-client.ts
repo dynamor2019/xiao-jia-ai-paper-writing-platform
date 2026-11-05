@@ -6,7 +6,6 @@
 
 import {
   getRoute,
-  getRouteCandidates,
   getApiKey,
   getBaseUrl,
   getDefaultModel,
@@ -15,7 +14,9 @@ import {
   type TaskType,
 } from '../config/model-routing.js';
 import { readResponsesStream } from './responses-stream.js';
-import { boundedModelAttempts, isBillingModelFailure, usesResponsesProtocol } from './model-request-policy.js';
+import { boundedModelAttempts, isRetryableModelFailure, usesResponsesProtocol } from './model-request-policy.js';
+import { modelEnvironment, withModelEnvironment } from './model-request-context.js';
+import { resolvePaperModelEnv } from '../../scripts/paper-model-env.mjs';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -50,61 +51,52 @@ export interface ChatOptions {
 export class ModelClient {
   private readonly lastRequestAt = new Map<ModelProvider, number>();
 
+  /** Allow isolated callers to supply configuration without mutating process.env. */
+  constructor(private readonly resolveEnvironment: () => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>
+    = () => ({ ...process.env })) {}
+
   /**
    * 统一聊天接口
    * 显式 provider/model 优先，未指定时按 task 路由
    */
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<ChatResponse> {
+    const env = await this.resolveEnvironment();
+    return withModelEnvironment(env, () => this.chatResolved(messages, options));
+  }
+
+  /** Select once; failures never change the requested model or provider. */
+  private async chatResolved(messages: ChatMessage[], options: ChatOptions): Promise<ChatResponse> {
     let provider: ModelProvider = options.provider || 'openai';
     assertModelProvider(provider);
     let model = options.model;
-    let routes = [{ provider, model: model || '' }];
 
     if (options.task && !options.provider) {
       const route = getRoute(options.task);
       provider = route.provider;
       model = model || route.model;
-      routes = options.model ? [{ provider, model }] : getRouteCandidates(options.task);
-      routes[0] = { provider, model };
     }
 
     if (!model) {
       model = getDefaultModel(provider);
     }
 
-    routes[0] = { provider, model };
-    let lastError: unknown;
-    const budget = { remaining: 3 };
-    for (let routeIndex = 0; routeIndex < routes.length; routeIndex++) {
-      const route = routes[routeIndex];
-      try {
-        return await this.requestRoute(messages, route, options, budget);
-      } catch (error) {
-        lastError = error;
-        const fallback = routes[routeIndex + 1];
-        if (!fallback || budget.remaining === 0 || !isRouteFailoverEligible(error)) throw error;
-        console.warn(`[模型切换] ${route.provider}/${route.model} 请求失败，切换到 ${fallback.provider}/${fallback.model}`);
-      }
-    }
-    throw lastError instanceof Error ? lastError : new Error('模型路由全部失败');
+    return this.requestRoute(messages, { provider, model }, options);
   }
 
   private async requestRoute(
     messages: ChatMessage[],
     route: { provider: ModelProvider; model: string },
-    options: ChatOptions,
-    budget: { remaining: number }
+    options: ChatOptions
   ): Promise<ChatResponse> {
-    const configuredRetries = Number(process.env.MODEL_MAX_RETRIES || 0);
+    const configuredRetries = Number(modelEnvironment().MODEL_MAX_RETRIES ?? 1);
     const defaultAttempts = Number.isSafeInteger(configuredRetries) && configuredRetries >= 0
       ? configuredRetries + 1
       : 1;
     const maxAttempts = boundedModelAttempts(options.maxAttempts ?? defaultAttempts);
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        budget.remaining -= 1;
         await this.waitForPacing(route.provider);
-        if (route.provider === 'claude' || (route.provider === 'deepseek' && process.env.DEEPSEEK_API_MODE === 'anthropic-messages')) {
+        if (route.provider === 'claude' || (route.provider === 'deepseek' && modelEnvironment().DEEPSEEK_API_MODE === 'anthropic-messages')) {
           const response = await this.chatClaude(messages, route.model, options, route.provider);
           assertUsefulResponse(response.content, options, route.model);
           return response;
@@ -113,10 +105,10 @@ export class ModelClient {
         assertUsefulResponse(response.content, options, route.model);
         return response;
       } catch (error) {
-        const retryable = isRetryableModelError(error);
+        const retryable = isRetryableModelFailure(error);
         if (!retryable) throw error;
         if (error instanceof ModelRequestError && error.code === 'EMPTY_RESPONSE') throw error;
-        if (attempt >= maxAttempts || budget.remaining === 0) {
+        if (attempt >= maxAttempts) {
           const detail = error instanceof Error ? error.message : String(error);
           throw new Error(
             `中转站上游暂不可用；为避免重复计费，已停止自动重试。稍后手动继续即可。原始错误：${detail}`,
@@ -131,7 +123,7 @@ export class ModelClient {
   }
 
   private async waitForPacing(provider: ModelProvider): Promise<void> {
-    const configured = Number(process.env.MODEL_MIN_INTERVAL_MS || 500);
+    const configured = Number(modelEnvironment().MODEL_MIN_INTERVAL_MS || 500);
     const interval = Number.isFinite(configured) ? Math.max(0, configured) : 500;
     const waitMs = interval - (Date.now() - (this.lastRequestAt.get(provider) || 0));
     if (waitMs > 0) await delay(waitMs);
@@ -142,7 +134,7 @@ export class ModelClient {
    * 判断模型是否使用 Responses API（gpt-5.x 系列在中转站只支持 Responses API）
    */
   private useResponsesApi(model: string): boolean {
-    return usesResponsesProtocol(model, process.env);
+    return usesResponsesProtocol(model, modelEnvironment());
   }
 
   /**
@@ -156,8 +148,8 @@ export class ModelClient {
   ): Promise<ChatResponse> {
     const responses = provider === 'openai' ? this.useResponsesApi(model)
       : usesResponsesProtocol(model, { OPENAI_API_MODE: provider === 'grok'
-        ? process.env.GROK_API_MODE || 'openai-responses'
-        : process.env.DEEPSEEK_API_MODE || 'openai-completions' });
+        ? modelEnvironment().GROK_API_MODE || 'openai-responses'
+        : modelEnvironment().DEEPSEEK_API_MODE || 'openai-completions' });
     if (responses) {
       return this.chatOpenAIResponses(messages, model, options, provider);
     }
@@ -201,7 +193,7 @@ export class ModelClient {
     }
 
     // 推理努力
-    const effort = provider === 'openai' ? process.env.OPENAI_REASONING_EFFORT : undefined;
+    const effort = provider === 'openai' ? modelEnvironment().OPENAI_REASONING_EFFORT : undefined;
     if (effort) {
       body.reasoning = { effort };
     }
@@ -213,7 +205,7 @@ export class ModelClient {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 300000)),
+      signal: AbortSignal.timeout(options.timeoutMs ?? Number(modelEnvironment().MODEL_TIMEOUT_MS || 300000)),
     });
 
     if (!response.ok) {
@@ -282,7 +274,7 @@ export class ModelClient {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 300000)),
+      signal: AbortSignal.timeout(options.timeoutMs ?? Number(modelEnvironment().MODEL_TIMEOUT_MS || 300000)),
     });
 
     if (!response.ok) {
@@ -325,7 +317,7 @@ export class ModelClient {
       throw new Error(`API key for ${provider} is not configured; use its configured credential reference`);
     }
 
-    if (provider === 'claude' && process.env.ANTHROPIC_API_MODE?.trim().toLowerCase() === 'openai-responses') {
+    if (provider === 'claude' && modelEnvironment().ANTHROPIC_API_MODE?.trim().toLowerCase() === 'openai-responses') {
       return this.chatOpenAIResponses(messages, model, options, provider);
     }
 
@@ -362,7 +354,7 @@ export class ModelClient {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 300000)),
+      signal: AbortSignal.timeout(options.timeoutMs ?? Number(modelEnvironment().MODEL_TIMEOUT_MS || 300000)),
     });
 
     if (!response.ok) {
@@ -410,7 +402,7 @@ export class ModelClient {
         temperature: options.temperature ?? 0.2,
         max_tokens: options.maxTokens ?? 4096,
       }),
-      signal: AbortSignal.timeout(options.timeoutMs ?? Number(process.env.MODEL_TIMEOUT_MS || 300000)),
+      signal: AbortSignal.timeout(options.timeoutMs ?? Number(modelEnvironment().MODEL_TIMEOUT_MS || 300000)),
     });
     if (!response.ok) {
       const errorText = await response.text();
@@ -456,7 +448,7 @@ export class ModelClient {
 let defaultClient: ModelClient | null = null;
 export function getModelClient(): ModelClient {
   if (!defaultClient) {
-    defaultClient = new ModelClient();
+    defaultClient = new ModelClient(() => resolvePaperModelEnv());
   }
   return defaultClient;
 }
@@ -486,25 +478,6 @@ async function parseJsonResponse(response: Response, label: string): Promise<Rec
   }
 }
 
-function isRetryableModelError(error: unknown): boolean {
-  if (isBillingModelFailure(error)) return false;
-  if (error instanceof ModelRequestError) return true;
-  return isTransientTransportError(error);
-}
-
-function isRouteFailoverEligible(error: unknown): boolean {
-  if (isBillingModelFailure(error)) return false;
-  if (error instanceof ModelRequestError && error.code === 'EMPTY_RESPONSE') return true;
-  if (isTransientTransportError(error)) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return /\[(?:400|404)\].*(?:model|unsupported)|model.*(?:not found|unsupported|unavailable)/i.test(message);
-}
-
-function isTransientTransportError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /中转站上游暂不可用|fetch failed|ECONNRESET|ETIMEDOUT|TimeoutError|aborted|TRANSPORT|HTTP 408|HTTP 409|HTTP 429|HTTP 5\d\d|\[5\d\d\]|\[429\]/i.test(message);
-}
-
 function assertNonEmptyResponse(
   content: string,
   provider: ModelProvider,
@@ -519,7 +492,7 @@ function assertNonEmptyResponse(
 }
 
 function assertUsefulResponse(content: string, options: ChatOptions, model: string): void {
-  if (process.env.MODEL_STRICT_OUTPUT === 'false') return;
+  if (modelEnvironment().MODEL_STRICT_OUTPUT === 'false') return;
   const normalized = content.trim();
   const minimum = options.minOutputChars ?? defaultMinOutputChars(options.task);
   if (normalized.length < minimum) {
@@ -557,7 +530,7 @@ function defaultMinOutputChars(task: TaskType | undefined): number {
 }
 
 function useClaudeOpenAICompatibility(baseUrl: string): boolean {
-  const configured = process.env.ANTHROPIC_API_MODE?.trim().toLowerCase();
+  const configured = modelEnvironment().ANTHROPIC_API_MODE?.trim().toLowerCase();
   if (configured) return configured === 'openai-completions' || configured === 'openai';
   return /code\.rayinai\.com/i.test(baseUrl);
 }

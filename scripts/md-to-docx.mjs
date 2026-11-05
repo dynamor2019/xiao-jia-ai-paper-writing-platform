@@ -32,7 +32,7 @@ async function main() {
   const resourcePath = [dirname(input), process.cwd()].join(delimiter);
   const args = [
     input,
-    '--from=markdown+tex_math_dollars+tex_math_single_backslash+raw_tex',
+    '--from=markdown-blank_before_header+tex_math_dollars+tex_math_single_backslash+raw_tex',
     '--to=docx',
     '--standalone',
     '--wrap=none',

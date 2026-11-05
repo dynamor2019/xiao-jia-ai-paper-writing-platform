@@ -304,7 +304,7 @@ test('workflow continuation reconciles stale Web state and resumes the same fail
     else process.env.PAPER_DATA_ROOT = previousRoot;
     if (previousProject === undefined) delete process.env.DSH_PAPER_PROJECT_DIR;
     else process.env.DSH_PAPER_PROJECT_DIR = previousProject;
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
 
@@ -348,13 +348,10 @@ test('Web requests use task routes while explicit model selection stays in contr
     assert.equal(prompt.variables.model, 'claude-opus-5');
     await enter('请设计研究方案', 2);
     assert.deepEqual(await request(2), { provider: 'rayinai-claude', model: 'claude-opus-5' });
-    const retry = await handlers.get('agent/request-error')({ agent, turn: 2, step: 1, failure: { code: 'SERVER' } }, async () => undefined);
-    assert.deepEqual(retry, { kind: 'retry' });
+    assert.equal(handlers.has('agent/request-error'), false);
     assert.deepEqual(await handlers.get('agent/request')({ agent, turn: 2, step: 1 }, async () => ({
       provider: 'rayinai-claude', model: 'claude-opus-5',
-    })), { provider: 'rayinai', model: 'gpt-5.6-sol' });
-    const noSecondRetry = await handlers.get('agent/request-error')({ agent, turn: 2, step: 1, failure: { code: 'SERVER' } }, async () => undefined);
-    assert.equal(noSecondRetry, undefined);
+    })), { provider: 'rayinai-claude', model: 'claude-opus-5' });
     events.push({ type: 'model/selection' });
     assert.deepEqual(await request(2, { provider: 'rayinai', model: 'gpt-5.6-sol' }), {
       provider: 'rayinai', model: 'gpt-5.6-sol',
@@ -453,11 +450,7 @@ test('Web routing preserves an explicit model when no configured fallback exists
       provider: 'rayinai', model: 'gpt-5.6-terra', reasoningEffort: 'high',
     }));
     assert.equal((await request()).model, 'gpt-5.6-terra');
-    const retry = await handlers.get('agent/request-error')({
-      agent, turn: 1, step: 1,
-      failure: { code: 'PI_AI_ERROR', message: 'Model "gpt-5.6-terra" is not supported by any configured account in this group' },
-    }, async () => undefined);
-    assert.equal(retry, undefined);
+    assert.equal(handlers.has('agent/request-error'), false);
     assert.deepEqual(await request(), { provider: 'rayinai', model: 'gpt-5.6-terra', reasoningEffort: 'high' });
   } finally {
     restoreSavedEnv(saved);
@@ -488,11 +481,7 @@ test('Web routing reports a rejected manually selected model without silent repl
       provider: 'rayinai', model: 'gpt-5.6-terra',
     }));
     await request();
-    const retry = await handlers.get('agent/request-error')({
-      agent, turn: 1, step: 1,
-      failure: { code: 'PI_AI_ERROR', message: 'Model "gpt-5.6-terra" is not supported' },
-    }, async () => undefined);
-    assert.equal(retry, undefined);
+    assert.equal(handlers.has('agent/request-error'), false);
     assert.deepEqual(await request(), { provider: 'rayinai', model: 'gpt-5.6-terra' });
   } finally {
     restoreSavedEnv(saved);
@@ -562,11 +551,16 @@ test('paper inputs stay in their own project directories', async () => {
 });
 
 test('citation verification fails closed and preserves every citation', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-citation-config-'));
+  await writeFile(join(home, 'settings.yaml'), JSON.stringify({ 'llm-pi-ai': { providers: {
+    rayinai: { api: 'openai-responses', apiKeyEnv: 'OPENAI_API_KEY' },
+  } } }));
   const originalFetch = globalThis.fetch;
   const saved = saveEnv([
-    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'MODEL_MIN_INTERVAL_MS', 'MODEL_STRICT_OUTPUT',
+    'DSH_HOME', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'MODEL_MIN_INTERVAL_MS', 'MODEL_STRICT_OUTPUT',
     'ROUTE_CITATION_PROVIDER', 'ROUTE_CITATION_MODEL',
   ]);
+  process.env.DSH_HOME = home;
   process.env.OPENAI_API_KEY = 'test-key';
   process.env.OPENAI_BASE_URL = 'https://proxy.invalid/v1';
   process.env.MODEL_MIN_INTERVAL_MS = '0';
@@ -605,6 +599,7 @@ test('citation verification fails closed and preserves every citation', async ()
   } finally {
     globalThis.fetch = originalFetch;
     restoreSavedEnv(saved);
+    await rm(home, { recursive: true, force: true });
   }
 });
 

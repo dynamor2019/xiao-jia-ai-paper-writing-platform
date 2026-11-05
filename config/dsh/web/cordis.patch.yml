@@ -2,6 +2,8 @@
 - insert:
     - id: paper-model-credentials
       name: ./model-credentials.js
+    - id: xiaojia-platform-updates
+      name: ./platform-updates.js
     - id: paper-command
       name: ./paper-command.js
     - id: academic-search
@@ -27,6 +29,10 @@
 - id: agent-preset-registry
   config:
     default: paper
+
+# This updater bypasses the protected staging and model dependency lock.
+- id: version-update
+  disabled: true
 
 # 沙箱策略设为最宽
 - id: sandbox-policy

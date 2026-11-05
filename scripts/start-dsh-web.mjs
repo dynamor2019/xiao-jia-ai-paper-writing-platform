@@ -8,6 +8,7 @@ import { patchFullAccessToolSchemas } from './patch-dsh-full-access-tools.mjs';
 import { patchContinueButton } from './patch-dsh-continue-button.mjs';
 import { patchEditRecovery } from './patch-dsh-edit-recovery.mjs';
 import { patchEmptyToolCallRetry } from './patch-dsh-empty-tool-call.mjs';
+import { patchContextOverflowClassification } from './patch-dsh-context-overflow.mjs';
 import { patchWebAllLite } from './patch-dsh-web-all-lite.mjs';
 import { patchJournalSelector } from './patch-dsh-journal-ui.mjs';
 import { patchTodoStoppedStatus } from './patch-dsh-todo-status.mjs';
@@ -26,6 +27,7 @@ import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
 import { resolveWebProxyEnv } from './web-proxy-env.mjs';
 import { runStartupPatch } from './startup-patch.mjs';
 import { schedulePeriodicCleanup } from './periodic-cleanup.mjs';
+import { resolveNpmCache } from './shared-npm-cache.mjs';
 
 const binPath = join(PROJECT_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
 const dataRoot = resolveDataRoot();
@@ -33,7 +35,7 @@ const stateDir = resolve(dataRoot, process.env.PAPER_STATE_DIR || '.dsh-state');
 const tempDir = resolve(stateDir, 'tmp');
 const webWorkspace = resolve(process.env.DSH_WEB_WORKSPACE || join(PROJECT_ROOT, 'output'));
 const npmPrefix = process.env.DSH_NPM_PREFIX || join(process.env.APPDATA || join(process.env.USERPROFILE || '', 'AppData', 'Roaming'), 'npm');
-const npmCache = process.env.DSH_NPM_CACHE || join(stateDir, 'npm-cache');
+const npmCache = resolveNpmCache();
 const lockPath = join(stateDir, 'web-supervisor.lock.json');
 const supervisorLog = join(stateDir, 'web-supervisor.log');
 const childStdoutLog = join(stateDir, 'web-child.stdout.log');
@@ -100,6 +102,7 @@ runStartupPatch('期刊与论文工作台补丁', patchJournalSelector);
 runStartupPatch('快捷继续按钮补丁', patchContinueButton);
 runStartupPatch('编辑失败恢复补丁', patchEditRecovery);
 runStartupPatch('空工具调用重试补丁', patchEmptyToolCallRetry);
+runStartupPatch('上下文溢出判定补丁', patchContextOverflowClassification);
 runStartupPatch('任务停止状态补丁', patchTodoStoppedStatus);
 runStartupPatch('模型列表加载补丁', patchModelCatalog);
 runStartupPatch('模型延迟信号补丁', patchModelLatency);
@@ -272,21 +275,6 @@ if (await isHealthy()) {
   logSupervisor('检测到已有健康服务，本次启动无需重复运行。');
   if (shouldOpenBrowser) openFreshBrowser();
   process.exit(0);
-}
-
-// 启动配置监控：持续修复 settings.yaml.imported 中被 dsh 还原的 api 类型
-{
-  const watcherPath = join(PROJECT_ROOT, 'scripts', 'config-watcher.mjs');
-  if (existsSync(watcherPath)) {
-    const watcher = spawn(process.execPath, [watcherPath], {
-      cwd: PROJECT_ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: false,
-    });
-    watcher.stdout.on('data', (chunk) => process.stdout.write(chunk));
-    watcher.stderr.on('data', (chunk) => process.stderr.write(chunk));
-    console.log('[config-watcher] 配置监控进程已启动');
-  }
 }
 
 let restartCount = 0;

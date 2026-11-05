@@ -1,17 +1,64 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { PipelineState } from '../types.js';
-import { citationClaimContext, recoverDraftCitations, refreshDraftCitations, verifyDraftCitations } from './citation-recovery.js';
+import { citationClaimContext, readVerifiedCitationCache, recoverDraftCitations, refreshDraftCitations, verifyDraftCitations } from './citation-recovery.js';
 import { getModelClient } from '../lib/model-client.js';
+import { getRoute } from '../config/model-routing.js';
 
 test('refresh preserves paragraph context including decimal quantities', () => {
   const state = { sections: [{ content: 'A factor of 1.5 is not verified [1].', citations: [] }],
     papers: [{ id: 'source-1' }], notes: new Map() } as unknown as PipelineState;
   refreshDraftCitations(state);
   assert.equal(state.sections[0].citations[0].rawText, state.sections[0].content);
+});
+
+test('narrative table references send the actual attributed row instead of an empty claim', () => {
+  const rawText = '| Source | Evidence |\n|---|---|\n| Chen et al. (2022) | Duct routing. |\n| Other | Other claim. |';
+  assert.equal(citationClaimContext({ marker: 'Chen et al. (2022)', rawText, paperId: 'chen', verified: false }),
+    '| Chen et al. (2022) | Duct routing. |');
+});
+
+test('legacy approval migration requires the exact route and source evidence fingerprint', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'citation-legacy-proof-'));
+  const previous = process.env.ROUTE_CITATION_MODEL;
+  try {
+    const papers = [{ id: 'source', title: 'Original source', abstract: 'Original evidence' }] as PipelineState['papers'];
+    const citation = { paperId: 'source', marker: '[1]', verified: false, rawText: 'Claim [1].' };
+    const key = createHash('sha256').update(JSON.stringify({ version: 4, route: getRoute('citation'), citations: [citation], papers, notes: [] })).digest('hex');
+    writeFileSync(join(directory, `${key}.json`), JSON.stringify([{ citation, paper: papers[0], status: 'verified', reason: 'Source supports claim' }]));
+    assert.equal(readVerifiedCitationCache(directory, papers).length, 1);
+    assert.equal(readVerifiedCitationCache(directory, [{ ...papers[0], abstract: 'Different evidence' }]).length, 0);
+    process.env.ROUTE_CITATION_MODEL = 'different-cache-reviewer';
+    assert.equal(readVerifiedCitationCache(directory, papers).length, 0);
+  } finally {
+    if (previous === undefined) delete process.env.ROUTE_CITATION_MODEL;
+    else process.env.ROUTE_CITATION_MODEL = previous;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('extractive-only recovery may omit unsupported background but never a methods paragraph', async context => {
+  const directory = mkdtempSync(join(tmpdir(), 'citation-extractive-policy-'));
+  try {
+    const generate = context.mock.method(getModelClient(), 'generate', async (system: string) => {
+      assert.ok(!system.startsWith('Repair'));
+      return JSON.stringify({ keep: [], reason: 'No source supports this assertion' });
+    });
+    for (const title of ['Introduction', 'Methods']) {
+      const state = { sections: [{ id: title, title, content: 'Unsupported claim [1].\n\nRetained context.\n\nRetained scope.', citations: [] }],
+        papers: [{ id: 'source', abstract: 'Unrelated source' }], notes: new Map() } as unknown as PipelineState;
+      refreshDraftCitations(state);
+      const failures = [{ citation: state.sections[0].citations[0], status: 'mismatch' as const, reason: 'No support' }];
+      const repaired = await recoverDraftCitations(state, failures, { evidence: '', cacheDir: directory, extractiveOnly: true }, () => {});
+      assert.equal(repaired, title === 'Introduction' ? 1 : 0);
+      assert.equal(state.sections[0].content.includes('Unsupported'), title === 'Methods');
+    }
+    assert.equal(generate.mock.callCount(), 1);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('a changed reviewer model cannot reuse a previous model assessment', async (context) => {
@@ -119,9 +166,9 @@ test('third revision receives the last rejection and all failed attempts stay ca
     const save = () => assert.fail('Rejected assertions must never be saved');
     assert.equal(await recoverDraftCitations(state, failures, options, save), 0);
     assert.equal(revisions, 3);
-    assert.equal(generate.mock.callCount(), 6);
+    assert.equal(generate.mock.callCount(), 7);
     assert.equal(await recoverDraftCitations(state, failures, options, save), 0);
-    assert.equal(generate.mock.callCount(), 6);
+    assert.equal(generate.mock.callCount(), 7);
     assert.equal(state.sections[0].content, 'Unsupported claim [1].');
   } finally {
     rmSync(directory, { recursive: true, force: true });

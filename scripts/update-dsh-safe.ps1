@@ -9,7 +9,8 @@ $DataRoot = $env:PAPER_DATA_ROOT
 if (-not $DataRoot) {
   $DataRoot = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "XiaoJiaAI Data"
 }
-$NpmCacheRoot = Join-Path $DataRoot ".dsh-state\npm-cache"
+$NpmCacheRoot = & node (Join-Path $PSScriptRoot "shared-npm-cache.mjs")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 New-Item -ItemType Directory -Path $NpmCacheRoot -Force | Out-Null
 $env:NPM_CONFIG_CACHE = $NpmCacheRoot
 

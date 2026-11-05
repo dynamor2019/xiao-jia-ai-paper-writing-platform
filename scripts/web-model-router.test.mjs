@@ -30,29 +30,23 @@ test('manual selection is preserved, including unavailable-model errors', async 
   const { handlers, event } = fixture([{ provider: 'claude', model: 'claude-sonnet-5' }], true);
   const config = { provider: 'rayinai-claude', model: 'claude-sonnet-5-5' };
   assert.deepEqual(await handlers.get('agent/request')(event, async () => config), config);
-  const result = await handlers.get('agent/request-error')({ ...event,
-    failure: { code: 'model_not_found' } }, async () => ({ kind: 'original-error' }));
-  assert.equal(result.kind, 'original-error');
+  assert.equal(handlers.has('agent/request-error'), false);
 });
 
-test('automatic failover permits at most three distinct attempts per step', async () => {
+test('the router selects a task model without installing a second error-recovery chain', async () => {
   const candidates = ['one', 'two', 'three', 'four'].map((model) => ({ provider: 'claude', model }));
   const { handlers, event } = fixture(candidates);
   for (let attempt = 0; attempt < 3; attempt++) {
     const route = await handlers.get('agent/request')(event, async () => ({}));
-    assert.equal(route.model, candidates[attempt].model);
-    const result = await handlers.get('agent/request-error')({ ...event,
-      failure: { code: 'TIMEOUT' } }, async () => ({ kind: 'original-error' }));
-    assert.equal(result.kind, attempt < 2 ? 'retry' : 'original-error');
+    assert.equal(route.model, candidates[0].model);
   }
+  assert.equal(handlers.has('agent/request-error'), false);
 });
 
 test('authentication failures do not spend tokens on other model groups', async () => {
   const { handlers, event } = fixture([{ provider: 'claude', model: 'one' }]);
   await handlers.get('agent/request')(event, async () => ({}));
-  const result = await handlers.get('agent/request-error')({ ...event,
-    failure: { code: 'AUTH' } }, async () => ({ kind: 'original-error' }));
-  assert.equal(result.kind, 'original-error');
+  assert.equal(handlers.has('agent/request-error'), false);
 });
 
 test('automatic Grok routing uses its own provider instead of the OpenAI group', async () => {

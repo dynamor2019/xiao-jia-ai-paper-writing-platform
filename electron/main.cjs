@@ -46,7 +46,7 @@ async function waitForWebReady(timeoutMs = 120000) {
 }
 
 function startWebService() {
-  webProcess = spawn(process.execPath, ['scripts/start-dsh-web.mjs'], {
+  webProcess = spawn(process.execPath, ['scripts/launch-dsh.mjs'], {
     cwd: projectRoot,
     env: {
       ...process.env,

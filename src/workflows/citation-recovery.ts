@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getModelClient } from '../lib/model-client.js';
 import { getRoute } from '../config/model-routing.js';
@@ -7,9 +7,12 @@ import type { PipelineState } from '../types.js';
 import type { VerificationResult } from '../plugins/verification/citation-verifier.js';
 import { extractCitations } from '../plugins/writing/section-writer.js';
 import { renderCanonicalMarkdown } from './canonical-draft.js';
+import { selectEvidenceBoundSentences } from './extractive-citation-repair.js';
 
 /** Isolate attributed sentences without splitting decimal quantities or renumbering markers. */
 export function citationClaimContext(citation: VerificationResult['citation']): string {
+  const tableRow = (citation.rawText || '').split('\n').find(line => line.trim().startsWith('|') && line.includes(citation.marker));
+  if (tableRow) return tableRow.trim();
   const segments = Array.from(new Intl.Segmenter('en', { granularity: 'sentence' })
     .segment(citation.rawText || ''), (entry) => entry.segment.trim());
   const claims = segments.flatMap((segment, index) => {
@@ -17,7 +20,7 @@ export function citationClaimContext(citation: VerificationResult['citation']): 
     if (segment.startsWith(citation.marker) && index > 0) return [`${segments[index - 1]} ${segment}`];
     return [segment];
   });
-  return claims.join(' ');
+  return claims.join(' ') || (citation.rawText || '').split('\n').filter(line => line.includes(citation.marker)).join(' ').trim();
 }
 
 /** Preserve manuscript reference identities; batch position must never rename a source. */
@@ -52,14 +55,26 @@ async function verifyBoundBatch(state: PipelineState, citations: VerificationRes
 }
 
 /** Verify small bounded batches and reuse exact evidence-bound assessments on resume. */
-export async function verifyDraftCitations(state: PipelineState, directory: string): Promise<VerificationResult[]> {
+export async function verifyDraftCitations(state: PipelineState, directory: string,
+  previous?: { results: VerificationResult[]; route: ReturnType<typeof getRoute> }): Promise<VerificationResult[]> {
   refreshDraftCitations(state);
   mkdirSync(directory, { recursive: true });
   const results: VerificationResult[] = [];
+  const previousResults = previous && JSON.stringify(previous.route) === JSON.stringify(getRoute('citation')) ? previous.results : [];
   for (const section of state.sections) {
     for (let index = 0; index < section.citations.length; index += 2) {
       const citations = section.citations.slice(index, index + 2);
-      const key = createHash('sha256').update(JSON.stringify({ version: 4, route: getRoute('citation'), citations,
+      const reusable = citations.map(citation => previousResults.find(result => {
+        const paper = state.papers.find(item => item.id === citation.paperId);
+        return result.status === 'verified' && paper && !state.notes.has(paper.id)
+          && JSON.stringify(result.citation) === JSON.stringify(citation)
+          && result.paper?.title === paper.title && result.paper?.abstract === paper.abstract;
+      }));
+      if (reusable.every(Boolean)) {
+        results.push(...reusable as VerificationResult[]);
+        continue;
+      }
+      const key = createHash('sha256').update(JSON.stringify({ version: 5, route: getRoute('citation'), citations,
         papers: state.papers, notes: [...state.notes] })).digest('hex');
       const path = join(directory, `${key}.json`);
       if (existsSync(path)) {
@@ -72,6 +87,22 @@ export async function verifyDraftCitations(state: PipelineState, directory: stri
     }
   }
   return results;
+}
+
+/** Migrate only legacy assessments whose filename proves the current route and exact evidence. */
+export function readVerifiedCitationCache(directory: string, papers: PipelineState['papers']): VerificationResult[] {
+  if (!existsSync(directory)) return [];
+  const verified: VerificationResult[] = [];
+  for (const name of readdirSync(directory).filter(name => /^[a-f0-9]{64}\.json$/.test(name))) {
+    let rows: VerificationResult[];
+    try { rows = JSON.parse(readFileSync(join(directory, name), 'utf8')); }
+    catch (error) { if (error instanceof SyntaxError) continue; throw error; }
+    if (!Array.isArray(rows)) continue;
+    const key = createHash('sha256').update(JSON.stringify({ version: 4, route: getRoute('citation'),
+      citations: rows.map(row => row.citation), papers, notes: [] })).digest('hex');
+    if (name === `${key}.json`) verified.push(...rows.filter(row => row.status === 'verified'));
+  }
+  return verified;
 }
 
 /** Cache every raw reply before parsing; failed replies must not trigger repeated paid attempts. */
@@ -132,7 +163,7 @@ async function supportedRevision(candidate: string, evidence: string, directory:
 export async function recoverDraftCitations(
   state: PipelineState,
   failures: VerificationResult[],
-  options: { evidence: string; cacheDir: string },
+  options: { evidence: string; cacheDir: string; extractiveOnly?: boolean },
   save: () => void,
 ): Promise<number> {
   if (renderCanonicalMarkdown(state.sections) !== undefined) return 0;
@@ -148,8 +179,8 @@ export async function recoverDraftCitations(
         && !/JSON|漏掉|尚未返回/.test(failure.reason));
       if (!findings.length) continue;
       let feedback = '';
-      let lastRejection = '';
-      for (let attempt = 0; attempt < 3; attempt++) {
+      let lastRejection = options.extractiveOnly ? 'Free-form rewriting disabled; retain only supported original sentences' : '';
+      for (let attempt = 0; attempt < (options.extractiveOnly ? 0 : 3); attempt++) {
       const response = await cachedReply(options.cacheDir,
         'Repair ONLY the specified paragraph against explicit failed-citation findings. Return strict JSON {"content":"complete revised paragraph"}. Keep the supported topic, method and evidence. Distinguish literature claims from this study: match literature markers only to the source passages; explicitly identify project methods, results, assumptions and limitations as current-study facts supported by the validated experiment, not as literature findings. Remove or narrow unsupported CLAIMS, not merely their citation markers. Delete fabricated literature percentages/intensities, wrong author attributions and unsupported claims that no prior work exists. Do not invent replacement sources, findings, savings, significance or experiments. You may remove unsupported numbers/citations; preserve valid project quantities, formulas and disclosed assumptions. Do not expand scope. Prefer a concise complete paragraph containing only evidence-supported statements, not editorial instructions.',
         `Evidence:\n${evidence}\n\nFailed findings:\n${JSON.stringify(findings.map((finding) => ({ marker: finding.citation.marker, reason: finding.reason })))}\n\nOriginal paragraph:\n${original}${feedback}`, 'writing');
@@ -183,6 +214,23 @@ export async function recoverDraftCitations(
       repaired++;
       console.log(`[引用改稿] ${section.id} 第${index + 1}段已通过独立证据核对并保存`);
       break;
+      }
+      if (paragraphs[index].trim() === original && lastRejection) {
+        const selected = await selectEvidenceBoundSentences(original, evidence, join(options.cacheDir, 'extractive'));
+        const citations = extractCitations(selected || '', state.papers);
+        const supported = selected && !citations.some(citation => citation.paperId.startsWith('missing-reference-'))
+          && (await supportedRevision(selected, evidence, options.cacheDir)).supported;
+        const optionalBackground = selected !== undefined && !supported && /^(Introduction|Background|Related work)$/i.test(section.title || '')
+          && paragraphs.filter(paragraph => paragraph.trim()).length > 2;
+        if (supported || optionalBackground) {
+          paragraphs[index] = supported ? selected! : '';
+          section.content = paragraphs.filter(paragraph => paragraph.trim()).join('\n\n');
+          section.citations = extractCitations(section.content, state.papers);
+          section.wordCount = section.content.split(/\s+/).length;
+          save();
+          repaired++;
+          console.log(`[引用摘取修复] ${section.id} 第${index + 1}段已按证据保留原句或移出无支撑背景；原稿保留`);
+        }
       }
       if (paragraphs[index].trim() === original && lastRejection
         && /^(Implications|Future work)\b/i.test(section.title || '')

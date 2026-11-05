@@ -78,7 +78,9 @@ export function patchContinueButton(bundlePath = CLIENT_BUNDLE) {
   const legacyAccessAnchor = '\t\t\tconst accessSelect = command === void 0 ? null : (0, react_jsx_runtime.jsx)(PermissionSelect, {';
   const accessAnchor = source.includes(legacyAccessAnchor)
     ? legacyAccessAnchor
-    : '\t\t\tconst primaryStops = running && subagent === null && (empty || blocked !== void 0);';
+    : source.includes('const primaryStops = running && subagent === null && !sending')
+      ? '\t\t\tconst primaryStops = running && subagent === null && !sending && (empty || blocked !== void 0);'
+      : '\t\t\tconst primaryStops = running && subagent === null && (empty || blocked !== void 0);';
   const shortcut = [
     '\t\t\tconst submitQuickContinue = () => {',
     '\t\t\t\tif (inputActions === void 0) return;',

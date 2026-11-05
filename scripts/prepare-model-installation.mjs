@@ -9,9 +9,11 @@ export function prepareModelInstallation(projectRoot) {
   if (!existsSync(target)) return;
   const patch = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'patch-dsh-empty-tool-call.mjs')).href;
   const alias = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'patch-dsh-protocol-alias.mjs')).href;
+  const context = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'patch-dsh-context-overflow.mjs')).href;
   const code = `import { patchEmptyToolCallRetry } from ${JSON.stringify(patch)};
     import { patchOpenAiProtocolAlias } from ${JSON.stringify(alias)};
-    patchEmptyToolCallRetry(); patchOpenAiProtocolAlias();`;
+    import { patchContextOverflowClassification } from ${JSON.stringify(context)};
+    patchEmptyToolCallRetry(); patchOpenAiProtocolAlias(); patchContextOverflowClassification();`;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
     cwd: projectRoot, stdio: 'inherit', windowsHide: true,
   });

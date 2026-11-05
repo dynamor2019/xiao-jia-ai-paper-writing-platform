@@ -1,0 +1,12 @@
+# Deployment requirements (documentation; not a pip requirements file).
+# Main application: Node.js 24 LTS recommended; npm included with Node.js.
+# Required npm packages: package.json
+# Reproducible dependency versions: package-lock.json
+# Install: double-click setup-dsh.bat (runs npm ci and runtime setup).
+# Start: double-click the project launch BAT after setup finishes.
+# Electron is downloaded locally by npm for optional desktop mode.
+# Optional Python plotting: Python 3 with venv/pip; setup installs pylustrator
+# into an isolated environment when that feature is selected.
+# Optional Revit integration: install RevitCortex separately; see docs/revitcortex-mcp.md.
+# No node_modules, Python environment, Electron binary, cache or user data is shipped.
+# Do not run pip install -r requirements.txt to install this Node.js application.

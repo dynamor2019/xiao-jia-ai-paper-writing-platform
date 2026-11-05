@@ -232,22 +232,56 @@ function buildLiteratureSupport(
 /** 从正文中提取引用标记 */
 export function extractCitations(content: string, papers: Paper[]): Citation[] {
   const citations: Citation[] = [];
-  const regex = /\[(\d+)\]|\([A-Z][^()\n]*,\s*(?:19|20)\d{2}[a-z]?\)/g;
+  const regex = /\[(\d+)\]|\([A-Za-z][^()\n]*,\s*(?:19|20)\d{2}[a-z]?\)/g;
   let match: RegExpExecArray | null;
 
   while ((match = regex.exec(content)) !== null) {
+    const labels = match[1] ? [match[0]] : match[0].slice(1, -1).split(/;\s*/).map(label => `(${label.trim()})`);
+    for (const label of labels) {
     const paper = match[1]
       ? papers[parseInt(match[1], 10) - 1]
-      : papers.find((item) => (item as Paper & { citationLabel?: string }).citationLabel === match![0]);
+      : papers.find((item) => (item as Paper & { citationLabel?: string }).citationLabel === label);
     citations.push({
-      paperId: paper?.id || `missing-reference-${match[1] || match[0]}`,
+      paperId: paper?.id || `missing-reference-${match[1] || label}`,
       marker: match[0],
       verified: false,
       rawText: citationContext(content, match.index),
     });
+    }
   }
 
+  return [...citations, ...extractNarrativeCitations(content, papers)];
+}
+
+/** Bind narrative author-year forms to the same permanent source as parenthetical citations. */
+function extractNarrativeCitations(content: string, papers: Paper[]): Citation[] {
+  const citations: Citation[] = [];
+  for (const paper of papers) {
+    const label = (paper as Paper & { citationLabel?: string }).citationLabel;
+    if (!label) continue;
+    const marker = label.slice(1, -1).replace(/,\s*((?:19|20)\d{2}[a-z]?)$/, ' ($1)');
+    if (marker === label.slice(1, -1)) continue;
+    let index = content.indexOf(marker);
+    while (index >= 0) {
+      if (index === 0 || !/\p{L}/u.test(content[index - 1])) {
+        citations.push({ paperId: paper.id, marker, verified: false, rawText: citationContext(content, index) });
+      }
+      index = content.indexOf(marker, index + marker.length);
+    }
+  }
+  for (const candidate of narrativeCitationCandidates(content)) {
+    if (citations.some(citation => citation.marker === candidate.marker && citation.rawText === citationContext(content, candidate.index))) continue;
+    const paper = papers.find(item => (item as Paper & { citationLabel?: string }).citationLabel === candidate.label);
+    citations.push({ paperId: paper?.id || `missing-reference-${candidate.label}`, marker: candidate.marker,
+      verified: false, rawText: citationContext(content, candidate.index) });
+  }
   return citations;
+}
+
+/** Discover narrative sources even when their evidence has not yet been bound. */
+export function narrativeCitationCandidates(content: string): Array<{ marker: string; label: string; index: number }> {
+  return [...content.matchAll(/\b([A-Z][\p{L}'-]+(?:\s+et al\.|\s+and\s+[A-Z][\p{L}'-]+)?)\s+\(((?:19|20)\d{2}[a-z]?)\)/gu)]
+    .map(match => ({ marker: match[0], label: `(${match[1]}, ${match[2]})`, index: match.index! }));
 }
 
 function citationContext(content: string, markerIndex: number): string {

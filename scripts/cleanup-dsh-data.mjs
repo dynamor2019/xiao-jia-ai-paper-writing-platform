@@ -51,7 +51,7 @@ function olderThan(pathStat, days) {
 function isManagedTempArtifact(path) {
   const relativePath = relative(join(STATE_ROOT, 'tmp'), path).split(sep);
   if (relativePath.length < 2 || relativePath[0] === '..' || isAbsolute(relativePath[0])) return false;
-  return /^(?:dsh-(?:workspace-changes|spill|acl-skill)-|tsx-)|^node-compile-cache$/i.test(relativePath[0]);
+  return /^(?:dsh-acl-skill-|tsx-)|^node-compile-cache$/i.test(relativePath[0]);
 }
 
 function hasProtectedSegment(path) {
@@ -121,9 +121,19 @@ async function addExpiredBackupMatches(actions, root, maxAgeDays) {
     files.sort((left, right) => right.modifiedAt - left.modifiedAt);
     for (const file of files.slice(3)) {
       if (NOW - file.modifiedAt <= maxAgeDays * DAY_MS) continue;
+      const digest = await hashFile(file.path);
+      let retainedPath;
+      for (const retained of files.slice(0, 3)) {
+        if (retained.bytes === file.bytes && await hashFile(retained.path) === digest) {
+          retainedPath = retained.path;
+          break;
+        }
+      }
+      if (!retainedPath) continue;
       actions.push({
         type: 'file', path: file.path, bytes: file.bytes,
-        reason: `superseded managed backup older than ${maxAgeDays} days; newest three retained`,
+        sha256: digest, retainedPath,
+        reason: `byte-identical managed backup older than ${maxAgeDays} days; newest three retained`,
       });
     }
   }
@@ -190,6 +200,7 @@ async function buildPlan(options) {
       join(STATE_ROOT, 'npm-cache'),
       (_path, pathStat) => olderThan(pathStat, options.npmCacheDays),
       `npm cache older than ${options.npmCacheDays} days`,
+      new Set(['_npx']),
     );
   }
   const papersRoot = join(DATA_ROOT, 'output', 'papers');

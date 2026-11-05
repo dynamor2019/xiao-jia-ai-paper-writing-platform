@@ -40,6 +40,28 @@ test('a traceable false measurement claim remains blocking even if verdict says 
   assert.equal(manuscriptReviewBlocked({ ...DEFECT, verdict: 'pass' }), true);
 });
 
+test('a reviewer cannot accuse a manual 48 of 50 result while quoting a disclosed limitation', () => {
+  const statement = 'Physical accuracy has not been established by a traceable inspection record.';
+  const review: ScientificReview = { verdict: 'revise', findings: [{ ...DEFECT.findings[0],
+    issue: 'Manuscript asserts manual inspection validated 48 of 50 edges but no sample is supplied.',
+    claimQuote: statement }] };
+  assert.throws(() => validateReviewEvidence(review, statement, EVIDENCE), /numerical accusation/);
+});
+
+test('a known access-restriction schema alias stays unresolved without changing a scientific verdict', async context => {
+  const response = { verdict: 'pass', findings: [{ ...SUBMISSION.findings[0], severity: 'minor',
+    submissionRequirement: 'public-repository|restricted-access-disclosure' }] };
+  context.mock.method(getModelClient(), 'generate', async () => JSON.stringify(response));
+  const { reviewScientificQuality } = await import('../plugins/verification/scientific-quality-reviewer.js');
+  const result = await reviewScientificQuality(SECTIONS, EVIDENCE);
+  assert.equal(result.success, true);
+  assert.equal(result.data?.findings[0].submissionRequirement, 'source-access');
+  assert.equal(result.data?.findings[0].blockingStage, 'submission');
+  assert.equal(result.data?.verdict, 'pass');
+  assert.equal(response.findings[0].submissionRequirement, 'public-repository|restricted-access-disclosure');
+  validateReviewEvidence(result.data!, MANUSCRIPT, EVIDENCE);
+});
+
 test('serious findings require literal claim and evidence anchors, not merely filled text fields', () => {
   for (const patch of [{ claimQuote: undefined }, { claimQuote: 'Nonexistent claim' },
     { evidenceQuote: 'Invented record' }, { evidenceSource: undefined }, { blockingStage: undefined }]) {

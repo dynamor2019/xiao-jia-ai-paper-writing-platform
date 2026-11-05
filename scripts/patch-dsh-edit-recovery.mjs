@@ -61,7 +61,9 @@ function patchToolFs(target) {
 
   const legacyPrompt = 'Use the edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_string with new_string; by default old_string must appear exactly once. If old_string appears multiple times, provide a more specific old_string or set replace_all to true. Read the file first (the default fs-observation-policy requires it), unless you just created or edited it in this session.';
   const promptAnchor = source.includes(legacyPrompt) ? legacyPrompt
-    : 'Read a file before editing it (the default fs-observation-policy requires it), unless you just created or edited it in this session.';
+    : source.includes('Read a file before editing it unless you just created or edited it in this session.')
+      ? 'Read a file before editing it unless you just created or edited it in this session.'
+      : 'Read a file before editing it (the default fs-observation-policy requires it), unless you just created or edited it in this session.';
   const promptReplacement = `${promptAnchor} If an edit reports old_string was not found, do not guess from memory: immediately read the current target file, copy the smallest exact current block that contains the intended change, and retry once with that exact old_string.`;
   source = replaceOnce(source, promptAnchor, promptReplacement, '系统提示');
 

@@ -19,29 +19,49 @@ function readYaml(path) {
   return store;
 }
 
+/** Remove prior managed projections, not the caller's explicit environment. */
+function explicitModelEnv(env) {
+  const clean = { ...env };
+  if (env.DSH_MANAGED_MODEL_FIELDS) {
+    let fields;
+    try { fields = JSON.parse(env.DSH_MANAGED_MODEL_FIELDS); } catch { /* Reject below. */ }
+    if (!Array.isArray(fields) || fields.some((field) => typeof field !== 'string'
+      || !/^(?:OPENAI|ANTHROPIC|GROK|DEEPSEEK)_(?:API_KEY|BASE_URL|MODEL|API_MODE)$/.test(field))) {
+      throw new Error('Invalid managed model environment metadata');
+    }
+    for (const field of fields) delete clean[field];
+  }
+  delete clean.DSH_MANAGED_MODEL_FIELDS;
+  return clean;
+}
+
 /** Align pipeline requests with the active Web provider and credential reference. */
 export function resolvePaperModelEnv(env = process.env, dshHome = env.DSH_HOME || join(homedir(), '.dsh'), projectRoot = PROJECT_ROOT) {
   const credentials = readYaml(join(dshHome, '.credentials.yaml'));
   const providers = readModelProviders(dshHome, projectRoot);
   const projectEnv = readProjectModelEnv(projectRoot);
-  const resolved = { ...env };
+  const explicit = explicitModelEnv(env);
+  const resolved = { ...explicit };
+  const managed = new Set();
+  const assignManaged = (field, value) => { resolved[field] = value; managed.add(field); };
   for (const [providerId, prefix] of [['rayinai', 'OPENAI'], ['rayinai-claude', 'ANTHROPIC'],
     ['sub2api-grok', 'GROK'], ['deepseek-official', 'DEEPSEEK']]) {
     const provider = providers[providerId] || (prefix === 'DEEPSEEK'
-      ? readDeepSeekProvider(dshHome, projectRoot, env)
+      ? readDeepSeekProvider(dshHome, projectRoot, explicit)
       : undefined);
     if (!provider) continue;
-    if (!resolved[`${prefix}_MODEL`] && provider.models?.[0]?.id) resolved[`${prefix}_MODEL`] = provider.models[0].id;
+    if (!resolved[`${prefix}_MODEL`] && provider.models?.[0]?.id) assignManaged(`${prefix}_MODEL`, provider.models[0].id);
     if (['openai-responses', 'openai-completions', 'anthropic-messages'].includes(provider.api)) {
-      resolved[`${prefix}_API_MODE`] = provider.api;
+      assignManaged(`${prefix}_API_MODE`, provider.api);
     }
     if (!resolved[`${prefix}_BASE_URL`] && typeof provider.baseURL === 'string' && provider.baseURL.trim()) {
-      resolved[`${prefix}_BASE_URL`] = provider.baseURL;
+      assignManaged(`${prefix}_BASE_URL`, provider.baseURL);
     }
     if (resolved[`${prefix}_API_KEY`]) continue;
-    const credential = env[provider.apiKeyEnv] || credentials.refs?.[provider.apiKeyEnv] || projectEnv[provider.apiKeyEnv];
+    const credential = explicit[provider.apiKeyEnv] || credentials.refs?.[provider.apiKeyEnv] || projectEnv[provider.apiKeyEnv];
     if (typeof credential !== 'string' || !credential.trim()) continue;
-    resolved[`${prefix}_API_KEY`] = credential;
+    assignManaged(`${prefix}_API_KEY`, credential);
   }
+  resolved.DSH_MANAGED_MODEL_FIELDS = JSON.stringify([...managed]);
   return resolved;
 }

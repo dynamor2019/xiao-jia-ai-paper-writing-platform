@@ -11,7 +11,7 @@ export function usesResponsesProtocol(model: string, env: NodeJS.ProcessEnv): bo
 
 /** Bound retries even when callers supply NaN, Infinity or oversized settings. */
 export function boundedModelAttempts(value: number): number {
-  return Number.isFinite(value) ? Math.min(3, Math.max(1, Math.floor(value))) : 1;
+  return Number.isFinite(value) ? Math.min(2, Math.max(1, Math.floor(value))) : 1;
 }
 
-export { isBillingModelFailure } from '../../scripts/model-failure-policy.mjs';
+export { isAuthenticationModelFailure, isBillingModelFailure, isRetryableModelFailure } from '../../scripts/model-failure-policy.mjs';

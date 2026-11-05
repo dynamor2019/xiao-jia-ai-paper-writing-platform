@@ -108,10 +108,17 @@ export function patchModelLatency(filePath = CLIENT_BUNDLE) {
 				this.latencyStop?.();
 				this.disposed = true;`);
   source = replaceOnce(source, 'live.directories.set(binding, directory);', 'directory.observeLatency(binding.session.eventSource);\n\t\t\t\tlive.directories.set(binding, directory);');
-  source = replaceOnce(source, 'className: ModelSelect_module_css_default.triggerLabel,\n\t\t\t\t\t\t\t\tchildren: modelLabel', 'className: ModelSelect_module_css_default.triggerLabel,\n\t\t\t\t\t\t\t\tchildren: modelLabel + (state.current ? " " + signalGlyph(latencyOf(state.current.provider, state.current.model)) : "")');
-  source = replaceOnce(source, 'className: ModelSelect_module_css_default.cellValue,\n\t\t\t\t\t\t\t\t\t\tchildren: modelLabel', 'className: ModelSelect_module_css_default.cellValue,\n\t\t\t\t\t\t\t\t\t\tchildren: modelLabel + (state.current ? " " + signalGlyph(latencyOf(state.current.provider, state.current.model)) : "")');
+  if (source.includes('const renderModelLabel = (provider, model, placement, selected)')) {
+    source = replaceOnce(source, 'fallback: model.badge === void 0 ? model.name :',
+      'fallback: model.badge === void 0 ? model.name + " " + signalGlyph(latencyOf(provider.id, model.id)) :');
+    source = replaceOnce(source, 'children: model.name\n',
+      'children: model.name + " " + signalGlyph(latencyOf(provider.id, model.id))\n');
+  } else {
+    source = replaceOnce(source, 'className: ModelSelect_module_css_default.triggerLabel,\n\t\t\t\t\t\t\t\tchildren: modelLabel', 'className: ModelSelect_module_css_default.triggerLabel,\n\t\t\t\t\t\t\t\tchildren: modelLabel + (state.current ? " " + signalGlyph(latencyOf(state.current.provider, state.current.model)) : "")');
+    source = replaceOnce(source, 'className: ModelSelect_module_css_default.cellValue,\n\t\t\t\t\t\t\t\t\t\tchildren: modelLabel', 'className: ModelSelect_module_css_default.cellValue,\n\t\t\t\t\t\t\t\t\t\tchildren: modelLabel + (state.current ? " " + signalGlyph(latencyOf(state.current.provider, state.current.model)) : "")');
+    source = replaceOnce(source, 'children: model.name\n', 'children: model.name + " " + signalGlyph(latencyOf(group.id, model.id))\n');
+  }
   source = replaceOnce(source, 'title: model.name,', 'title: model.name + (latencyOf(group.id, model.id) === void 0 ? " · 未测量" : " · 首响应约 " + latencyOf(group.id, model.id) + " ms"),');
-  source = replaceOnce(source, 'children: model.name\n', 'children: model.name + " " + signalGlyph(latencyOf(group.id, model.id))\n');
   source = replaceOnce(source, 'label: model.name,', 'label: model.name + " " + signalGlyph(latencyOf(group.id, model.id)),');
   source = replaceWhenPresent(source, 'detail: model.description !== void 0 ? `${group.name} · ${model.description}` : group.name,', 'detail: (model.description !== void 0 ? `${group.name} · ${model.description}` : group.name) + (latencyOf(group.id, model.id) === void 0 ? " · 未测量" : " · 首响应约 " + latencyOf(group.id, model.id) + " ms"),');
   source = replaceWhenPresent(source, 'detail: description !== void 0 ? `${name} · ${description}` : name,', 'detail: (description !== void 0 ? `${name} · ${description}` : name) + (latencyOf(group.id, model.id) === void 0 ? " · 未测量" : " · 首响应约 " + latencyOf(group.id, model.id) + " ms"),');

@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { ModelClient } from './model-client.js';
 
-test('paid proxy failures are not retried by default', async () => {
+test('temporary proxy failures retry only once by default', async () => {
   const originalFetch = globalThis.fetch;
   const originalApiKey = process.env.OPENAI_API_KEY;
   const originalBaseUrl = process.env.OPENAI_BASE_URL;
@@ -31,7 +31,7 @@ test('paid proxy failures are not retried by default', async () => {
       ),
       /为避免重复计费，已停止自动重试/
     );
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnv('OPENAI_API_KEY', originalApiKey);
@@ -41,7 +41,7 @@ test('paid proxy failures are not retried by default', async () => {
   }
 });
 
-test('uses Claude OpenAI compatibility and falls back after an empty response', async () => {
+test('Claude compatibility reports an empty response without switching provider', async () => {
   const originalFetch = globalThis.fetch;
   const saved = saveEnv([
     'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_MODE',
@@ -74,15 +74,12 @@ test('uses Claude OpenAI compatibility and falls back after an empty response', 
   };
 
   try {
-    const response = await new ModelClient().chat(
+    await assert.rejects(new ModelClient().chat(
       [{ role: 'user', content: 'test' }],
       { task: 'protocol', maxAttempts: 1 }
-    );
-    assert.equal(response.content, 'recovered');
-    assert.equal(response.provider, 'openai');
+    ), /no visible content/);
     assert.deepEqual(urls, [
       'https://proxy.invalid/v1/chat/completions',
-      'https://proxy.invalid/v1/responses',
     ]);
   } finally {
     globalThis.fetch = originalFetch;
@@ -90,7 +87,7 @@ test('uses Claude OpenAI compatibility and falls back after an empty response', 
   }
 });
 
-test('falls back to the cross-provider route after a transport failure', async () => {
+test('transport retry keeps the originally selected provider and model', async () => {
   const originalFetch = globalThis.fetch;
   const saved = saveEnv([
     'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_MODE',
@@ -115,7 +112,7 @@ test('falls back to the cross-provider route after a transport failure', async (
     calls += 1;
     if (calls === 1) throw new TypeError('fetch failed');
     return Response.json({
-      output: [{ type: 'message', content: [{ type: 'output_text', text: 'recovered' }] }],
+      choices: [{ message: { content: 'recovered' } }],
       usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
     });
   };
@@ -123,10 +120,11 @@ test('falls back to the cross-provider route after a transport failure', async (
   try {
     const response = await new ModelClient().chat(
       [{ role: 'user', content: 'test' }],
-      { task: 'protocol', maxAttempts: 1 }
+      { task: 'protocol', maxAttempts: 2 }
     );
     assert.equal(response.content, 'recovered');
-    assert.equal(response.provider, 'openai');
+    assert.equal(response.provider, 'claude');
+    assert.equal(response.model, 'claude-opus-5');
     assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
@@ -247,7 +245,7 @@ test('configured completions protocol is honored for a GPT model', async () => {
   }
 });
 
-test('retries and cross-provider fallback share a three-request budget', async () => {
+test('temporary failure makes at most two calls without cross-provider fallback', async () => {
   const saved = saveEnv(['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_MODE',
     'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_MODE', 'MODEL_MIN_INTERVAL_MS',
     'ROUTE_PROTOCOL_PROVIDER', 'ROUTE_PROTOCOL_MODEL', 'ROUTE_PROTOCOL_FALLBACK_PROVIDER',
@@ -272,7 +270,7 @@ test('retries and cross-provider fallback share a three-request budget', async (
   try {
     await assert.rejects(new ModelClient().chat([{ role: 'user', content: 'fixture' }],
       { task: 'protocol', maxAttempts: 2 }), /停止自动重试/);
-    assert.equal(calls, 3);
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
     restoreSavedEnv(saved);
@@ -299,6 +297,41 @@ test('insufficient quota stops without retrying another model', async () => {
   try {
     await assert.rejects(new ModelClient().chat([{ role: 'user', content: 'fixture' }],
       { task: 'protocol', maxAttempts: 3 }), /insufficient_quota/);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreSavedEnv(saved);
+  }
+});
+
+test('authentication transport messages neither retry nor switch providers', async () => {
+  const saved = saveEnv(['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_MODE',
+    'ROUTE_PROTOCOL_PROVIDER', 'ROUTE_PROTOCOL_MODEL', 'ROUTE_PROTOCOL_FALLBACK_PROVIDER',
+    'ROUTE_PROTOCOL_FALLBACK_MODEL']);
+  const originalFetch = globalThis.fetch;
+  Object.assign(process.env, { OPENAI_API_KEY: 'fixture-key', OPENAI_BASE_URL: 'https://fixture.example/v1',
+    OPENAI_API_MODE: 'openai-completions', ROUTE_PROTOCOL_PROVIDER: 'openai',
+    ROUTE_PROTOCOL_MODEL: 'primary', ROUTE_PROTOCOL_FALLBACK_PROVIDER: 'claude',
+    ROUTE_PROTOCOL_FALLBACK_MODEL: 'fallback' });
+  let calls = 0;
+  try {
+    for (const status of [401, 403]) {
+      calls = 0;
+      globalThis.fetch = async () => {
+        calls++;
+        return Response.json({ error: { message: 'upstream fetch failed' } }, { status });
+      };
+      await assert.rejects(new ModelClient().chat([{ role: 'user', content: 'fixture' }],
+        { task: 'protocol', maxAttempts: 3 }), new RegExp(`\\[${status}\\]`));
+      assert.equal(calls, 1);
+    }
+    calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      throw new Error('fetch failed', { cause: { code: 'MISSING_CREDENTIAL' } });
+    };
+    await assert.rejects(new ModelClient().chat([{ role: 'user', content: 'fixture' }],
+      { task: 'protocol', maxAttempts: 3 }), /fetch failed/);
     assert.equal(calls, 1);
   } finally {
     globalThis.fetch = originalFetch;

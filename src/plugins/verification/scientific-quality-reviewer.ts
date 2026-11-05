@@ -279,6 +279,15 @@ function parseReview(raw: string): ScientificReview {
   for (const finding of parsed.findings) {
     const alias = finding as ScientificReviewFinding & { abstract?: unknown };
     if (finding && finding.issue === undefined && typeof alias.abstract === 'string') finding.issue = alias.abstract;
+    if (finding?.blockingStage === 'submission' && finding.category === 'reproducibility'
+      && finding.severity === 'minor' && String(finding.submissionRequirement) === 'public-repository|restricted-access-disclosure') {
+      finding.submissionRequirement = 'source-access';
+    }
+    if (finding?.blockingStage === 'submission' && finding.category === 'presentation'
+      && finding.severity !== 'critical' && finding.submissionRequirement === 'source-access'
+      && /public[- ]depos|redistribution rights|source permissions|public repository/i.test(`${finding.issue} ${finding.requiredAction}`)) {
+      finding.category = 'reproducibility';
+    }
     if (!finding || !['critical', 'major', 'minor'].includes(finding.severity)
       || (['section', 'issue', 'requiredAction'] as const).some((field) => typeof finding[field] !== 'string'
         || !finding[field].trim())) throw new Error('质量审查意见缺少有效严重级别或证据说明');

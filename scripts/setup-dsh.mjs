@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
 import { ensureSetupModelDependencies, loadSetupPaths } from './setup-model-dependencies.mjs';
+import { resolveNpmCache } from './shared-npm-cache.mjs';
 
 loadSetupPaths(PROJECT_ROOT);
 
@@ -12,7 +13,7 @@ const isWindows = process.platform === 'win32';
 const args = new Set(process.argv.slice(2));
 const dataRoot = resolveDataRoot();
 const stateRoot = join(dataRoot, '.dsh-state');
-const npmCacheRoot = join(stateRoot, 'npm-cache');
+const npmCacheRoot = resolveNpmCache();
 const pipCacheRoot = join(stateRoot, 'pip-cache');
 const pylustratorVenv = join(stateRoot, 'pylustrator-venv');
 

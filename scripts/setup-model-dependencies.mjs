@@ -6,6 +6,7 @@ import * as util from 'node:util';
 import { captureModelDependencies, verifyModelDependencies } from './model-dependency-lock.mjs';
 import { runNpm } from './guarded-model-update.mjs';
 import { prepareModelInstallation } from './prepare-model-installation.mjs';
+import { resolveNpmCache } from './shared-npm-cache.mjs';
 
 /** Read only setup paths before third-party dependencies are installed. */
 export function loadSetupPaths(projectRoot, env = process.env) {
@@ -13,7 +14,7 @@ export function loadSetupPaths(projectRoot, env = process.env) {
   if (!existsSync(path)) return env;
   if (!util.parseEnv) throw new Error('Setup requires Node.js LTS 20.12 or newer to read .env safely');
   const values = util.parseEnv(readFileSync(path, 'utf8'));
-  for (const key of ['PAPER_DATA_ROOT', 'DSH_HOME']) {
+  for (const key of ['PAPER_DATA_ROOT', 'DSH_HOME', 'DSH_NPM_CACHE']) {
     if (env[key] === undefined && values[key] !== undefined) env[key] = values[key];
   }
   return env;
@@ -55,6 +56,7 @@ export async function ensureSetupModelDependencies({ projectRoot, dshHome, run =
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   loadSetupPaths(projectRoot);
+  process.env.NPM_CONFIG_CACHE = resolveNpmCache();
   const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh');
   await ensureSetupModelDependencies({ projectRoot, dshHome });
   console.log('Setup model dependency protection verified');

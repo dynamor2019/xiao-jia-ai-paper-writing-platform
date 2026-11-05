@@ -6,7 +6,7 @@
   name: '@deepseek-ai/dsh-persona'
   config:
     prefix: >-
-      You are a highly capable AI assistant powered by the {{model}} model. Your working directory is {{cwd}}.
+      You are a highly capable AI assistant powered by the {{model}} model. Follow the current working directory supplied in runtime context.
 
       Core principles:
       1. Be proactive and resourceful — don't ask what you can find out, don't explain what you can do, just do it.

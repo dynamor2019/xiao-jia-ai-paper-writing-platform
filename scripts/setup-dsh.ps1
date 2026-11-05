@@ -9,8 +9,6 @@ if (-not $DataRoot) {
   $DataRoot = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "XiaoJiaAI Data"
 }
 
-$npmCacheRoot = Join-Path $DataRoot ".dsh-state\npm-cache"
-
 function Require-Command {
   param(
     [Parameter(Mandatory = $true)][string]$Name,
@@ -27,6 +25,9 @@ function Require-Command {
 
 Require-Command -Name "node" -InstallHint "Install full Node.js LTS from https://nodejs.org/ or run: winget install OpenJS.NodeJS.LTS"
 Require-Command -Name "npm" -InstallHint "Install full Node.js LTS. npm is included with the full installer; do not use a standalone node.exe."
+
+$npmCacheRoot = & node (Join-Path $PSScriptRoot "shared-npm-cache.mjs")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $nodeVersion = (& node -v).TrimStart("v")
 $major = [int]($nodeVersion.Split(".")[0])

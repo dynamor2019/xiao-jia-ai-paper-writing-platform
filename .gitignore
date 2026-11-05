@@ -17,3 +17,13 @@ __pycache__/
 .workbuddy/
 *.zip
 ~$*
+config/dsh/web/model-dependencies.lock.json
+.dsh-core-review-*/
+.dsh-upgrade-rollback-*/
+
+# Personal one-off tool is retained locally, not distributed.
+scripts/build-investment-valuation-dashboard.py
+OPTIMIZATION_COMPLETE.md
+OPTIMIZATION_PROGRESS.md
+.dsh-model-stage-*/
+.dsh-model-backup-*/

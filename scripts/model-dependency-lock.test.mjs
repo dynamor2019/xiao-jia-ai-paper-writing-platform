@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import test from 'node:test';
 import { assertModelDependencies, captureModelDependencies, MODEL_CALLER_ROOTS, MODEL_ROOTS } from './model-dependency-lock.mjs';
 import { guardedModelUpdate, validateUpdateSpecs } from './guarded-model-update.mjs';
@@ -28,6 +29,39 @@ function fixture(t) {
   writeFileSync(lockPath, JSON.stringify(baseline));
   return { root, baseline, lockPath };
 }
+
+test('a running host blocks installation before npm, while check-only can inspect safely', (t) => {
+  const { root, lockPath } = fixture(t);
+  mkdirSync(join(root, '.dsh-state'));
+  writeFileSync(join(root, '.dsh-state/web-supervisor.lock.json'), JSON.stringify({ pid: process.pid }));
+  let calls = 0;
+  const options = { projectRoot: root, lockPath, specs: ['core@2.0.0'],
+    prepare: () => {}, run: () => { calls++; } };
+  assert.throws(() => guardedModelUpdate(options), /DSH is running/);
+  assert.equal(calls, 0);
+  assert.deepEqual(guardedModelUpdate({ ...options, checkOnly: true }), { checked: true, installed: false });
+  assert.equal(calls, 1);
+});
+
+test('a host starting during staging prevents promotion and leaves live manifests intact', (t) => {
+  const { root, lockPath } = fixture(t);
+  const before = readFileSync(join(root, 'package.json'));
+  assert.throws(() => guardedModelUpdate({ projectRoot: root, lockPath, specs: ['core@2.0.0'],
+    prepare: () => {}, run: () => {
+      mkdirSync(join(root, '.dsh-state'));
+      writeFileSync(join(root, '.dsh-state/web-supervisor.lock.json'), JSON.stringify({ pid: process.pid }));
+    } }), /DSH is running/);
+  assert.ok(readFileSync(join(root, 'package.json')).equals(before));
+  assert.equal(JSON.parse(readFileSync(join(root, 'node_modules/adapter/package.json'))).version, '1.0.0');
+});
+
+test('an unreadable supervisor record cannot silently authorize dependency replacement', (t) => {
+  const { root, lockPath } = fixture(t);
+  mkdirSync(join(root, '.dsh-state'));
+  writeFileSync(join(root, '.dsh-state/web-supervisor.lock.json'), 'invalid-json');
+  assert.throws(() => guardedModelUpdate({ projectRoot: root, lockPath, specs: ['core@2.0.0'],
+    run: () => { throw new Error('npm must not run'); } }), /Cannot verify DSH supervisor state/);
+});
 
 test('captures transport SDK and required peers, tolerating missing optional packages', (t) => {
   const { baseline } = fixture(t);
@@ -357,6 +391,25 @@ test('required DSH peer services are declared rather than relying on a dirty ins
     for (const name of Object.keys(installed.peerDependencies || {})) {
       if (!name.startsWith('@deepseek-ai/') || installed.peerDependenciesMeta?.[name]?.optional) continue;
       assert.ok(manifest.dependencies[name], `Required peer ${name} from ${installed.name} is undeclared`);
+    }
+  }
+});
+
+test('all current DSH plugins resolve compatible framework peers', () => {
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const bootRequire = createRequire(join(root, 'node_modules/@deepseek-ai/dsh-app-boot/package.json'));
+  const { satisfies } = bootRequire('semver');
+  const version = JSON.parse(readFileSync(join(root, 'node_modules/@deepseek-ai/dsh/package.json'))).version;
+  for (const name of Object.keys(manifest.dependencies).filter(name => name.startsWith('@deepseek-ai/dsh'))) {
+    const file = join(root, 'node_modules', name, 'package.json');
+    const plugin = JSON.parse(readFileSync(file));
+    if (plugin.version !== version) continue;
+    const pluginRequire = createRequire(file);
+    for (const [peer, range] of Object.entries(plugin.peerDependencies || {})) {
+      if (!peer.startsWith('@deepseek-ai/cordis') || plugin.peerDependenciesMeta?.[peer]?.optional) continue;
+      const resolved = pluginRequire(`${peer}/package.json`).version;
+      assert.ok(satisfies(resolved, range), `${name} requires ${peer}@${range}, resolved ${resolved}`);
     }
   }
 });

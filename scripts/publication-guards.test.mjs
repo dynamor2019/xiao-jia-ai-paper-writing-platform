@@ -12,6 +12,7 @@ test('startup cannot rewrite imported API protocols', () => {
   assert.doesNotMatch(source, /replace\('api: openai-responses', 'api: openai-completions'\)/);
   assert.doesNotMatch(source, /no-proxy\.mjs|directApiEnv\(/);
   assert.doesNotMatch(source, /NO_PROXY:\s*'\*'/);
+  assert.doesNotMatch(source, /config-watcher\.mjs/);
   assert.match(source, /resolveWebProxyEnv\(process.env\)/);
 });
 

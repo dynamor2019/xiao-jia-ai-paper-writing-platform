@@ -24,6 +24,8 @@ test('cleanup removes only expired transient and pipeline staging files', async 
       '.dsh-state/tmp/session-latest.jsonl',
       '.dsh-state/tmp/cv_debug.log',
       '.dsh-state/tmp/unclassified/old-file',
+      '.dsh-state/tmp/dsh-workspace-changes-history/captures/unique-before-edit',
+      '.dsh-state/tmp/dsh-spill-history/session/tool-result.txt',
     ];
     for (const file of oldFiles) {
       const path = join(dataRoot, file);
@@ -43,6 +45,10 @@ test('cleanup removes only expired transient and pipeline staging files', async 
       backups.push(relativePath);
     }
     const externalLog = join(external, 'external.log');
+    const uniqueBackup = join(dataRoot, 'output/papers/paper-a/.dsh-state/manuscript.md.before-unique.bak');
+    await writeFile(uniqueBackup, 'unique historical evidence, never discard by age');
+    const historical = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000);
+    await utimes(uniqueBackup, historical, historical);
     await writeFile(externalLog, 'outside data root');
     await symlink(externalLog, join(dataRoot, '.dsh-state', 'linked.log'));
 
@@ -59,12 +65,18 @@ test('cleanup removes only expired transient and pipeline staging files', async 
     for (const file of oldFiles.slice(8, 10)) assert.equal(await stat(join(dataRoot, file)).catch(() => null), null, file);
     assert.ok((await stat(join(dataRoot, oldFiles[7])).catch(() => null))?.isFile(), 'npm cache is not traversed by the default cleanup');
     assert.equal((await readFile(externalLog, 'utf8')), 'outside data root');
+    assert.equal(await readFile(uniqueBackup, 'utf8'), 'unique historical evidence, never discard by age');
 
+    const npxServer = join(dataRoot, '.dsh-state/npm-cache/_npx/server/node_modules/server.js');
+    await mkdir(dirname(npxServer), { recursive: true });
+    await writeFile(npxServer, 'active MCP runtime, not a download cache');
+    await utimes(npxServer, old, old);
     const cacheCleanup = spawnSync(process.execPath, ['scripts/cleanup-dsh-data.mjs', '--apply', '--npm-cache-days=30'], {
       cwd: process.cwd(), env: { ...process.env, PAPER_DATA_ROOT: dataRoot }, encoding: 'utf8',
     });
     assert.equal(cacheCleanup.status, 0, cacheCleanup.stderr);
     assert.equal(await stat(join(dataRoot, oldFiles[7])).catch(() => null), null);
+    assert.ok((await stat(npxServer)).isFile(), 'even expired npx runtimes must be retained');
   } finally {
     await rm(dataRoot, { recursive: true, force: true });
     await rm(external, { recursive: true, force: true });

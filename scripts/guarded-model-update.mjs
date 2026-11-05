@@ -7,6 +7,7 @@ import { assertModelDependencies, captureModelDependencies, verifyModelDependenc
 import { prepareModelInstallation } from './prepare-model-installation.mjs';
 import { preserveModelUpdateAssets } from './model-update-assets.mjs';
 import { preserveLockedModelLayer } from './preserve-model-layer.mjs';
+import { assertModelHostStopped } from './model-update-idle.mjs';
 
 /** Run npm without changing the user's existing network environment. */
 export function runNpm(cwd, args) {
@@ -29,6 +30,7 @@ export function validateUpdateSpecs(specs) {
 export function guardedModelUpdate({ projectRoot, lockPath, specs, run = runNpm,
   prepare = prepareModelInstallation, checkOnly = false, auditStage = () => {}, move = renameSync }) {
   validateUpdateSpecs(specs);
+  if (!checkOnly) assertModelHostStopped(projectRoot);
   const baseline = verifyModelDependencies(projectRoot, lockPath);
   const staging = mkdtempSync(join(resolve(projectRoot), '.dsh-model-stage-'));
   try {
@@ -59,6 +61,7 @@ export function guardedModelUpdate({ projectRoot, lockPath, specs, run = runNpm,
 
 /** Keep the original dependency directory and manifests until verification succeeds. */
 function installVerifiedStage(projectRoot, staging, lockPath, move) {
+  assertModelHostStopped(projectRoot);
   const root = resolve(projectRoot);
   const modules = join(root, 'node_modules');
   const backup = join(root, `.dsh-model-backup-${basename(staging)}`);

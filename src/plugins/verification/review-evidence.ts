@@ -25,6 +25,12 @@ export function validateReviewEvidence(review: ScientificReview, manuscript: str
     if (!finding.claimQuote?.trim() || !normalized(manuscript).includes(normalized(finding.claimQuote))) {
       throw new Error('REVIEW_EVIDENCE_INVALID: blocking claim quote is absent from manuscript');
     }
+    const accusation = finding.issue.match(/\b(?:asserts|claims|states|reports|presents)\b([\s\S]*?)(?:\bbut\b|\bhowever\b|;|$)/i)?.[1];
+    const allegedNumbers = accusation?.match(/\b\d+(?:\.\d+)?\b/g) || [];
+    const quotedNumbers = new Set(finding.claimQuote.match(/\b\d+(?:\.\d+)?\b/g) || []);
+    if (allegedNumbers.some(number => !quotedNumbers.has(number))) {
+      throw new Error(`REVIEW_EVIDENCE_INVALID: numerical accusation ${allegedNumbers.join(', ')} is not bound to the quoted manuscript claim`);
+    }
     if (finding.evidenceSource === 'missing') {
       if (!finding.requiredEvidence?.trim() || finding.evidenceQuote !== '') {
         throw new Error('REVIEW_EVIDENCE_INVALID: missing evidence requires a specific obligation');

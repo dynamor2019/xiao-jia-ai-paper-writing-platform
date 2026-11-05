@@ -1920,13 +1920,8 @@ async function main() {
 
   if (!outputDir && !paperProjectId) paperProjectId = `paper-${randomUUID()}`;
 
-  // 加载 .env
-  try {
-    const dotenv = await import('dotenv');
-    dotenv.config();
-  } catch {
-    // dotenv 未安装时忽略
-  }
+  // Load application options without shadowing credentials managed by Web settings.
+  await import('../../scripts/project-env.mjs');
 
   const pipeline = new PaperPipeline(topic, async (stage, state) => {
     console.log(`\n[审批节点] 阶段: ${stage}`);

@@ -8,6 +8,7 @@ import { parse, parseDocument, stringify } from 'yaml';
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
 import { assertSharedRuntimeCompatible } from './shared-runtime-guard.mjs';
 import { lockInstalledModelRouting, verifyModelRouting } from './verify-model-routing.mjs';
+import { initializePackagedModelBaseline } from './packaged-model-baseline.mjs';
 
 const DSH_HOME = resolve(process.env.DSH_HOME || join(homedir(), '.dsh'));
 const PROVIDER_CREDENTIAL_ENV = {
@@ -247,6 +248,7 @@ export async function syncDshRuntime({ allowModelRoutingDrift = false } = {}) {
     allowRuntimeDrift: allowModelRoutingDrift,
   });
   assertSharedRuntimeCompatible(PROJECT_ROOT, DSH_HOME);
+  initializePackagedModelBaseline(PROJECT_ROOT, DSH_HOME);
   const skillSource = join(PROJECT_ROOT, '.dsh', 'skills');
   const skillTarget = join(DSH_HOME, 'skills');
   await mkdir(skillTarget, { recursive: true });
@@ -258,7 +260,7 @@ export async function syncDshRuntime({ allowModelRoutingDrift = false } = {}) {
 
   const profileSource = join(PROJECT_ROOT, 'config', 'dsh', 'web');
   const profileTarget = join(DSH_HOME, 'profiles', 'web');
-  for (const file of ['paper-command.js', 'paper-phases.js', 'paper-feedback.js', 'academic-search.js', 'research-memory.js', 'model-router.js', 'model-credentials.js', 'manuscript-authors.mjs', 'cordis.patch.yml']) {
+  for (const file of ['paper-command.js', 'paper-phases.js', 'paper-feedback.js', 'academic-search.js', 'research-memory.js', 'model-router.js', 'model-credentials.js', 'manuscript-authors.mjs', 'platform-updates.js', 'platform-updates-client.js', 'cordis.patch.yml']) {
     if (file === 'model-router.js' && !allowModelRoutingDrift && existsSync(join(profileTarget, file))) continue;
     await copyRenderedRuntimeFile(join(profileSource, file), join(profileTarget, file), file === 'cordis.patch.yml' && !allowModelRoutingDrift);
   }

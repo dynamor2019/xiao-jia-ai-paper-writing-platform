@@ -64,30 +64,15 @@ async function providerHasCredential(ctx, provider, credentialRefFor) {
   return Boolean(process.env[envName]?.trim());
 }
 
-function canFailOver(failure) {
-  return ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'EMPTY_RESPONSE'].includes(failure?.code)
-    || modelIsUnavailable(failure);
-}
-
-function modelIsUnavailable(failure) {
-  return failure?.code === 'model_not_found'
-    || /model.*(?:not\s+supported|not found|unsupported|unavailable)/i.test(failure?.message || '');
-}
-
 export function installWebModelRouter(ctx, routeCandidates, credentialRefFor = (provider) => PROVIDER_KEYS[provider]) {
   const activeTasks = new WeakMap();
   const scanned = new WeakMap();
-  const attempted = new WeakMap();
-  const recovery = new WeakMap();
 
   async function selectedRoute(agent, turn, step) {
     if (!agent || agent.session?.header?.origin === 'subagent' || hasManualSelection(agent.session, scanned)) return undefined;
     const task = activeTasks.get(agent)?.turn === turn ? activeTasks.get(agent).task : undefined;
     const candidates = task ? await routeCandidates(task) : [];
-    const pending = recovery.get(agent);
-    const route = pending?.turn === turn && pending.step === step
-      ? pending.route
-      : await firstAvailableRoute(ctx, candidates, credentialRefFor);
+    const route = await firstAvailableRoute(ctx, candidates, credentialRefFor);
     if (!route) return undefined;
     return { task, route };
   }
@@ -109,46 +94,15 @@ export function installWebModelRouter(ctx, routeCandidates, credentialRefFor = (
 
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
     const config = await next();
-    const pending = recovery.get(agent);
-    if (pending?.turn === turn && pending.step === step) {
-      attempted.set(agent, { turn, step, route: pending.route });
-      const { reasoningEffort: _previousEffort, ...rest } = config;
-      return { ...rest, ...pending.route };
-    }
     const selected = await selectedRoute(agent, turn, step);
     if (!selected) {
-      const route = config;
-      attempted.set(agent, { turn, step, route });
-      return route;
+      return config;
     }
     const { task, route } = selected;
-    attempted.set(agent, { turn, step, route });
     if (config.provider === route.provider && config.model === route.model) return config;
     const { reasoningEffort: _previousEffort, ...rest } = config;
     ctx.logger?.info?.(`Web 模型路由: ${task || 'default'} -> ${route.provider}/${route.model}`);
     return { ...rest, ...route };
-  });
-
-  ctx.on('agent/request-error', async ({ agent, turn, step, failure }, next) => {
-    const last = attempted.get(agent);
-    const task = activeTasks.get(agent)?.turn === turn ? activeTasks.get(agent).task : undefined;
-    if (last?.turn !== turn || last.step !== step || !canFailOver(failure)
-      || hasManualSelection(agent.session, scanned)) return next();
-    const previous = recovery.get(agent);
-    const visited = previous?.turn === turn && previous.step === step ? previous.visited : new Set();
-    visited.add(`${last.route.provider}/${last.route.model}`);
-    if (visited.size >= 3) return next();
-    const candidates = task ? await routeCandidates(task) : [];
-    const used = candidates.findIndex((item) => PROVIDERS[item.provider] === last.route.provider && item.model === last.route.model);
-    const remaining = used < 0
-      ? candidates.filter((item) => PROVIDERS[item.provider] !== last.route.provider || item.model !== last.route.model)
-      : candidates.slice(used + 1);
-    const fallback = await firstAvailableRoute(ctx, remaining.filter((item) =>
-      !visited.has(`${PROVIDERS[item.provider]}/${item.model}`)), credentialRefFor);
-    if (!fallback || (fallback.provider === last.route.provider && fallback.model === last.route.model)) return next();
-    recovery.set(agent, { turn, step, route: fallback, visited });
-    ctx.logger?.warn?.(`Web 模型回退: ${last.route.provider}/${last.route.model} -> ${fallback.provider}/${fallback.model}`);
-    return { kind: 'retry' };
   });
 
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {

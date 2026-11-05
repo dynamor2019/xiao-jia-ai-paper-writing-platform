@@ -1,0 +1,2 @@
+# Preserve exact file bytes: runtime integrity checks include original line endings.
+* -text
