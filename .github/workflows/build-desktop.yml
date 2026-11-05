@@ -32,7 +32,7 @@ jobs:
           "ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/" >> $env:GITHUB_ENV
 
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        run: npm ci --legacy-peer-deps --no-audit --no-fund
 
       - name: Build TypeScript
         run: npm run build
@@ -70,4 +70,4 @@ jobs:
             release/XiaoJiaAI-Source-*.zip
             release/xiaojia-update.json
           generate_release_notes: true
-          body_path: docs/release-notes-0.1.8.md
+          body_path: docs/release-notes-0.1.9.md
