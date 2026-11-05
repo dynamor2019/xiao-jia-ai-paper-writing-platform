@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileHash, readUpdateJson, updateFile, validateUpdateManifest, writeUpdateJson } from './platform-update-files.mjs';
@@ -96,7 +96,7 @@ export function promotePlatformUpdate({ projectRoot, staging, manifest, director
 }
 
 /** Install before importing the host; never run npm, change model credentials or touch user data. */
-export function installPendingPlatformUpdate({ projectRoot, stateRoot, extract = extractUpdateArchive,
+function performPendingPlatformUpdate({ projectRoot, stateRoot, extract = extractUpdateArchive,
   approve, verify, idle = assertPlatformIdle,
   dshHome = process.env.DSH_HOME || join(homedir(), '.dsh') }) {
   const directory = join(stateRoot, 'platform-updates');
@@ -126,7 +126,7 @@ export function installPendingPlatformUpdate({ projectRoot, stateRoot, extract =
     if (next.version !== manifest.version) throw new Error('清单与应用版本不一致');
     assertCompatibleDependencies(JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8')), next);
     assertProtectedModelFiles(projectRoot, manifest);
-    assertSourceTreeClean(projectRoot);
+    assertSourceTreeClean(projectRoot, directory);
     const dirty = readUpdateJson(join(directory, 'installed-files.json'));
     for (const [path, hash] of Object.entries(dirty?.files || {})) {
       if (manifest.files[path] && existsSync(updateFile(projectRoot, path)) && fileHash(updateFile(projectRoot, path)) !== hash) {
@@ -147,12 +147,43 @@ export function installPendingPlatformUpdate({ projectRoot, stateRoot, extract =
   }
 }
 
+/** Two simultaneous launches must not promote the same update transaction. */
+export function installPendingPlatformUpdate(options) {
+  const directory = join(options.stateRoot, 'platform-updates');
+  if (!existsSync(join(directory, 'pending.json')) && !existsSync(join(directory, 'transaction.json'))) {
+    return { installed: false };
+  }
+  const lease = join(directory, 'installer.lock.json');
+  if (existsSync(lease)) {
+    const lock = readUpdateJson(lease);
+    if (!Number.isSafeInteger(lock?.pid) || lock.pid <= 0) throw new Error('无法确认更新安装器状态');
+    try { process.kill(lock.pid, 0); } catch (error) {
+      if (error.code !== 'ESRCH') throw error;
+      rmSync(lease);
+    }
+  }
+  try { writeFileSync(lease, JSON.stringify({ pid: process.pid }), { flag: 'wx' }); }
+  catch (error) {
+    if (error.code === 'EEXIST') throw new Error('另一个启动器正在安装更新，请稍后再试');
+    throw error;
+  }
+  try { return performPendingPlatformUpdate(options); }
+  finally { rmSync(lease, { force: true }); }
+}
+
 /** Preserve tracked local customizations instead of resetting a developer checkout. */
-function assertSourceTreeClean(projectRoot) {
+function assertSourceTreeClean(projectRoot, directory) {
   if (!existsSync(join(projectRoot, '.git'))) return;
-  const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'],
+  const status = execFileSync('git', ['status', '--porcelain', '-z', '--untracked-files=no'],
     { cwd: projectRoot, encoding: 'utf8', windowsHide: true });
-  if (status.trim()) throw new Error('本地源码有未提交修改，自动更新未覆盖，请先保存版本');
+  const baseline = readUpdateJson(join(directory, 'installed-files.json'))?.files || {};
+  for (const entry of status.split('\0').filter(Boolean)) {
+    const path = entry.slice(3);
+    if (!/^[ M]{2} /.test(entry) || !baseline[path] || !existsSync(updateFile(projectRoot, path))
+      || fileHash(updateFile(projectRoot, path)) !== baseline[path]) {
+      throw new Error('本地源码有未提交修改，自动更新未覆盖，请先保存版本');
+    }
+  }
 }
 
 /** Model access changes need explicit review, even when the platform release is trusted. */

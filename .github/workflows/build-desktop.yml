@@ -70,4 +70,4 @@ jobs:
             release/XiaoJiaAI-Source-*.zip
             release/xiaojia-update.json
           generate_release_notes: true
-          body_path: docs/release-notes-0.1.9.md
+          body_path: docs/release-notes-0.1.10.md

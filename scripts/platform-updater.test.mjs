@@ -7,9 +7,31 @@ import { join } from 'node:path';
 import { PlatformUpdater } from './platform-updater.mjs';
 import { compareVersions, productPath, validateUpdateManifest, PLATFORM_REPO,
   MANIFEST_ASSET, releaseAssetUrl } from './platform-update-files.mjs';
-import { assertPlatformIdle, assertCompatibleDependencies, promotePlatformUpdate } from './install-platform-update.mjs';
+import { assertPlatformIdle, assertCompatibleDependencies, promotePlatformUpdate, installPendingPlatformUpdate } from './install-platform-update.mjs';
+import { registerPlatformUpdates } from './register-platform-updates.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+
+test('existing profile registration preserves BOM, line endings and all provider bytes', t => {
+  const root = fixture(t), home = join(root, 'home'), profile = join(home, 'profiles/web');
+  mkdirSync(profile, { recursive: true });
+  mkdirSync(join(root, 'config/dsh/web'), { recursive: true });
+  for (const file of ['platform-updates.js', 'platform-updates-client.js']) {
+    writeFileSync(join(root, 'config/dsh/web', file), '// public updater');
+  }
+  const path = join(profile, 'cordis.patch.yml');
+  const original = Buffer.from('\uFEFF# user comment\r\n- id: model\r\n  config: { apiKeyEnv: PRIVATE_KEY }\r\n');
+  writeFileSync(path, original);
+  const options = { projectRoot: root, dshHome: home, stateRoot: join(root, 'state'), idle: () => {} };
+  assert.equal(registerPlatformUpdates(options), true);
+  const result = readFileSync(path);
+  assert.deepEqual(result.subarray(0, original.length), original);
+  assert.doesNotMatch(result.toString(), /(?<!\r)\n/);
+  assert.equal(registerPlatformUpdates(options), false);
+  assert.deepEqual(readFileSync(path), result);
+  assert.throws(() => registerPlatformUpdates({ ...options, idle: () => { throw new Error('running'); } }));
+  assert.deepEqual(readFileSync(path), result);
+});
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'xiaojia-update-'));
@@ -99,6 +121,16 @@ test('host locks must positively establish absence before update', t => {
   assert.throws(() => assertPlatformIdle(root, () => {}));
   assertPlatformIdle(root, () => { throw Object.assign(new Error(), { code: 'ESRCH' }); });
   assert.throws(() => assertPlatformIdle(root, () => { throw Object.assign(new Error(), { code: 'EPERM' }); }));
+});
+
+test('a second launcher cannot install while another installer owns the transaction', t => {
+  const root = fixture(t), stateRoot = join(root, 'state'), directory = join(stateRoot, 'platform-updates');
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, 'pending.json'), '{}');
+  const lock = JSON.stringify({ pid: process.pid });
+  writeFileSync(join(directory, 'installer.lock.json'), lock);
+  assert.throws(() => installPendingPlatformUpdate({ projectRoot: root, stateRoot }), /另一个启动器/);
+  assert.equal(readFileSync(join(directory, 'installer.lock.json'), 'utf8'), lock);
 });
 
 test('dependency changes require explicit setup rather than automatic package replacement', () => {

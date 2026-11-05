@@ -1,7 +1,9 @@
 import './project-env.mjs';
 import { resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
-import { installPendingPlatformUpdate } from './install-platform-update.mjs';
+import { assertPlatformIdle, installPendingPlatformUpdate } from './install-platform-update.mjs';
+import { registerPlatformUpdates } from './register-platform-updates.mjs';
 import { patchPlatformUpdateUi } from './patch-dsh-platform-update-ui.mjs';
 
 const stateRoot = resolve(resolveDataRoot(), process.env.PAPER_STATE_DIR || '.dsh-state');
@@ -14,4 +16,8 @@ try {
 }
 try { patchPlatformUpdateUi(PROJECT_ROOT); }
 catch (error) { console.warn(`版本提示未载入：${error.message}`); }
+try {
+  registerPlatformUpdates({ projectRoot: PROJECT_ROOT,
+    dshHome: process.env.DSH_HOME || resolve(homedir(), '.dsh'), stateRoot, idle: assertPlatformIdle });
+} catch (error) { console.warn(`更新入口注册已延后：${error.message}`); }
 await import('./start-dsh-web.mjs');
