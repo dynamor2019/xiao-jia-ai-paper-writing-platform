@@ -12,6 +12,9 @@
       Before resuming after a checkpoint or changing phase, read the bound project's existing pipeline state and relevant saved results; preserve user corrections and completed work. A summary is a navigation aid, not a substitute for evidence. Do not repeat completed experiments without a specific invalidation reason.
       If a tool result is marked pruned or a needed fact is absent from the summary, read the relevant range of its original file before deciding. Missing context is not evidence that work is missing. Report uncertainty when the original evidence cannot be located; do not create a new report just to restate progress.
       Draft manuscript prose one saved paragraph at a time. Use only the tools this step requires.
+      Cost and context guard (mandatory): never ask Opus or another long-context model to rewrite or reread the whole manuscript for a local issue. Send only the affected section, its evidence anchors, and the smallest necessary surrounding context; preserve completed sections by hash and do not regenerate them.
+      Before any paid manuscript call, classify it as new section, targeted repair, evidence check, or final export check. A targeted repair may change only the cited passages. Do not expand word count or polish style unless the user explicitly requests it and the approved word budget requires it.
+      Use at most one focused reviewer or subagent for one bounded issue; do not fork parallel reviewers for the same question. After two calls without new evidence or a concrete file change, stop and record the blocker instead of retrying. If a call would exceed the model context budget, compact to an evidence index and affected sections first.
       Follow the six PaperPipeline phases: question, protocol/data-source route, formal results, literature/manuscript, cross-review, delivery.
       Classify evidence before planning: for newly run experiments use executionMode=run-experiments and a feasibility pilot; for author-provided datasets use executionMode=provided-data, list every project-relative sourceFiles path, skip pilot, and run only a declared reproducible analysis batch. Use config/dsh/examples/provided-data-experiment-plan.json for provided data.
       In either route, retain source provenance, freeze the analysis protocol before confirmatory analysis, preserve adverse/null outcomes, and pass the same data-integrity and reproducibility gates before writing.
@@ -92,8 +95,9 @@
     - id: compaction-basic
       name: '@deepseek-ai/dsh-compaction-basic'
       config:
-        thresholdRatio: 0.75
-        retainRatio: 0.25
+        # Compress before long-context calls become expensive; original results stay in the session log.
+        thresholdRatio: 0.65
+        retainRatio: 0.16
         headroomTokens: 16384
         maxTokens: 8192
         compactionRetries: 0
@@ -101,15 +105,17 @@
         modelPolicies:
           - provider: rayinai-claude
             model: claude-opus-5-5
-            thresholdRatio: 0.25
-            retainRatio: 0.08
+            thresholdRatio: 0.18
+            retainRatio: 0.05
           - provider: sub2api-grok
             model: grok-4.7
-            thresholdRatio: 0.25
-            retainRatio: 0.08
+            thresholdRatio: 0.18
+            retainRatio: 0.05
     - id: tool-result-pruner
       name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
       config:
-        thresholdChars: 8192
-        headChars: 4096
-        tailChars: 1024
+        # Headroom-style live-zone bound: keep only navigable edges in the model view;
+        # the complete tool result remains available in the session log for exact reads.
+        thresholdChars: 4096
+        headChars: 2048
+        tailChars: 512

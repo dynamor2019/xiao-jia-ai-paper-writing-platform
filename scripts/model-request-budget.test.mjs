@@ -63,7 +63,7 @@ test('connection errors receive two cooled retries on the same route and then st
     const decision = await f.fail({ code: 'TRANSPORT', message: 'Connection error.' });
     assert.equal(decision?.kind, i < 2 ? 'retry' : undefined);
   }
-  assert.deepEqual(f.cooldowns, [1500, 3000]);
+  assert.deepEqual(f.cooldowns, [10000, 30000]);
   await assert.rejects(f.request(), { code: 'MODEL_RETRY_BUDGET' });
 });
 

@@ -219,6 +219,18 @@ export function patchResearchWorkbench(source, eol) {
     '\t\t\tconst [snapshot, setSnapshot] = (0, react.useState)(null);',
     '\t\t\tconst [statusError, setStatusError] = (0, react.useState)("");',
     '\t\t\t(0, react.useEffect)(ensureWorkbenchStyles, []);',
+    "\t\t\t(0, react.useEffect)(() => {",
+    "\t\t\t\tconst receive = (event) => {",
+    "\t\t\t\t\tconst frame = document.getElementById(`dsh-reviewer-${sessionId}`);",
+    "\t\t\t\t\tif (event.origin !== location.origin || event.source !== frame?.contentWindow || event.data?.type !== 'dsh-reviewer-draft' || event.data.sessionId !== sessionId) return;",
+    "\t\t\t\t\tif (locked || !inputActions) return frame.contentWindow.postMessage({ type: 'dsh-reviewer-draft-result', error: 'DSH is busy; retry after the current turn finishes.' }, location.origin);",
+    "\t\t\t\t\tif (typeof event.data.task !== 'string' || event.data.task.length > 5000) return;",
+    "\t\t\t\t\tframe.contentWindow.postMessage({ type: 'dsh-reviewer-draft-result' }, location.origin); inputActions.setDraft(event.data.task); setOpen(false);",
+    "\t\t\t\t\tsetTimeout(() => inputActions.submit(), 0);",
+    "\t\t\t\t};",
+    "\t\t\t\tglobalThis.addEventListener('message', receive);",
+    "\t\t\t\treturn () => globalThis.removeEventListener('message', receive);",
+    "\t\t\t}, [sessionId, locked, inputActions]);",
     '\t\t\t(0, react.useEffect)(() => { try { setTopic(globalThis.localStorage?.getItem(topicStorageKey) ?? ""); setDirection(JSON.parse(globalThis.localStorage?.getItem(directionStorageKey) || "{}")); const saved = JSON.parse(globalThis.localStorage?.getItem(authorsStorageKey) || "[]"); setAuthors(Array.isArray(saved) && saved.length ? saved : [blankAuthor()]); } catch { setTopic(""); setDirection({}); setAuthors([blankAuthor()]); } setSnapshot(null); }, [topicStorageKey, directionStorageKey, authorsStorageKey]);',
     '\t\t\t(0, react.useEffect)(() => {',
     '\t\t\t\tif (!open || !sessionId) return void 0;',
@@ -292,6 +304,7 @@ export function patchResearchWorkbench(source, eol) {
     '\t\t\t\t\th("div", { className: "dsh-wb-direction" }, h("div", { className: "dsh-wb-direction-head" }, h("strong", null, "研究方向控制"), h("span", null, "可选；用于约束选题、检索、实验、写作和评审")), h("div", { className: "dsh-wb-direction-grid" }, ...WORKBENCH_DIRECTION_FIELDS.map((field) => h("div", { key: field.key }, h("label", null, field.label), h("textarea", { value: direction[field.key] || "", disabled: snapshot?.project, placeholder: field.placeholder, onChange: (event) => updateDirection(field.key, event.target.value) }))))),',
     '\t\t\t\t\th("div", { className: "dsh-wb-status" }, h("strong", null, statusLabel), h("span", { title: snapshot?.recommendedTopic || snapshot?.outputDir || statusError || snapshot?.nextRetryAt }, statusDetail), h("button", { type: "button", className: "dsh-wb-primary", disabled: locked || !primary.command, onClick: () => runCommand(primary.command) }, primary.label)),',
     '\t\t\t\t\th("div", { className: "dsh-wb-preview" }, h("strong", null, "Word 预览"), h("span", { title: snapshot?.latestWord || "" }, snapshot?.latestWord ? snapshot.latestWord : "当前论文还没有生成 Word 文件"), h("button", { type: "button", disabled: !snapshot?.latestWordPreviewUrl, onClick: openWordPreview }, "预览")),',
+    "\t\t\t\t\th(\"details\", { className: \"dsh-wb-reviewer\" }, h(\"summary\", { style: { padding: \"12px 14px\", cursor: \"pointer\" } }, \"\u5ba1\u7a3f\u56de\u590d / Ego \u8fd4\u4fee\"), sessionId && h(\"iframe\", { id: `dsh-reviewer-${sessionId}`, title: \"\u5ba1\u7a3f\u56de\u590d\u4e0e Ego \u8fd4\u4fee\", src: `/dsh-paper-reviews/ui?sessionId=${encodeURIComponent(sessionId)}`, style: { width: \"100%\", height: \"560px\", border: \"0\" } }), !snapshot?.project && h(\"p\", { style: { padding: \"0 14px\" } }, \"\u5df2\u6709\u7a3f\u4ef6\u53ef\u5728\u8fd4\u4fee\u9762\u677f\u76f4\u63a5\u7ed1\u5b9a\uff0c\u4e0d\u5fc5\u91cd\u8dd1\u8bba\u6587\u6d41\u6c34\u7ebf\")),",
     '\t\t\t\t\tphases.length > 0 && h("div", { className: "dsh-wb-progress-wrap" }, h("div", { className: "dsh-wb-progress-head" }, h("strong", null, "核心进度"), h("span", null, `${phases.filter((phase) => phase.passed).length}/${phases.length}`)), h("div", { className: "dsh-wb-progress", "aria-label": "论文核心进度" }, ...phases.map((stage) => { const stageStatus = stage.status || (stage.passed ? "complete" : "pending"); const stateLabel = stageStatus === "complete" ? "已完成" : stageStatus === "active" ? "进行中" : stageStatus === "error" ? "需处理" : stageStatus === "degraded" ? "降级待核验" : "待完成"; return h("div", { key: stage.id || stage.label, className: "dsh-wb-stage", "data-status": stageStatus, title: stage.detail ? `${stage.label}：${stage.detail}` : `${stage.label}：${stateLabel}` }, h("span", { className: "dsh-wb-stage-dot", "aria-hidden": "true" }), h("span", { className: "dsh-wb-stage-text" }, stage.label), h("small", null, stage.detail || stateLabel)); }))),',
     '\t\t\t\t\th("div", { className: "dsh-wb-actions" }, ...WORKBENCH_ACTIONS.map((action) => h("button", { key: action.title, type: "button", className: "dsh-wb-action", disabled: locked || !snapshot?.project, onClick: () => runCommand(action.command) }, h("strong", null, action.title), h("span", null, action.detail)))),',
     '\t\t\t\t\tsnapshot?.quality === "BLOCKED" && h("div", { className: "dsh-wb-foot" }, "科学核验：未通过")',
@@ -306,7 +319,9 @@ export function patchResearchWorkbench(source, eol) {
   if (existingStart >= 0) {
     const existingEnd = source.indexOf(componentAnchor, existingStart);
     if (existingEnd < 0) throw new Error('无法定位旧论文工作台结束位置');
-    const refreshed = `${source.slice(0, existingStart)}${helper}${source.slice(existingEnd)}`;
+    const journalStart = source.indexOf('\t\tconst JOURNAL_OPTIONS = ', existingStart);
+    const helperEnd = journalStart >= 0 && journalStart < existingEnd ? journalStart : existingEnd;
+    const refreshed = `${source.slice(0, existingStart)}${helper}${source.slice(helperEnd)}`;
     const legacyInvocation = '(0, react_jsx_runtime.jsx)(ResearchWorkbench, { locked, inputActions })';
     return refreshed.includes(legacyInvocation)
       ? refreshed.replace(legacyInvocation, '(0, react_jsx_runtime.jsx)(ResearchWorkbench, { locked, inputActions, sessionId })')

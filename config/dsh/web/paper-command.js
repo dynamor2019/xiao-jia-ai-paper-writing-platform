@@ -7,6 +7,7 @@
  *   /paper <选题> --journal <期刊ID> # 按目标期刊要求写作
  */
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
@@ -20,6 +21,8 @@ const name = 'command-paper';
 const inject = ['commands', 'goals', 'webServer', 'systemPrompt', 'tools'];
 
 const PROJECT_DIR = resolve(process.env.DSH_PAPER_PROJECT_DIR || String.raw`__DSH_PAPER_PROJECT_DIR__`);
+const REVIEWER_MODULE = join(PROJECT_DIR, 'scripts', 'reviewer-response-web.mjs');
+const { registerReviewerFeature } = await import(existsSync(REVIEWER_MODULE) ? pathToFileURL(REVIEWER_MODULE).href : new URL('../../../scripts/reviewer-response-web.mjs', import.meta.url).href);
 const DATA_ROOT = resolve(process.env.PAPER_DATA_ROOT || String.raw`__PAPER_DATA_ROOT__`);
 const INPUT_DIR = resolve(DATA_ROOT, process.env.PAPER_INPUT_DIR || 'papers/input');
 const OUTPUT_DIR = resolve(DATA_ROOT, process.env.OUTPUT_DIR || 'output');
@@ -1125,6 +1128,7 @@ async function confirmPaperStage(ctx, agent, decision = '') {
 }
 
 function apply(ctx) {
+  registerReviewerFeature(ctx, { resolveProject: (id) => activePaperDir({ id }), stateRoot: STATE_ROOT });
   registerTargetJournalContext(ctx);
 
   ctx.tools.register(defineTool({

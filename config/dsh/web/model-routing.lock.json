@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "providersSha256": "90d2c8ece1a0bc13b0a892dc91958e5d448e31195bea6d914df80c7701d0e982",
+  "providersSha256": "e3108d3d36fcf8a05dd86a9dd03ae2a0606b0bbabfd64cda4db3757e2ea4204b",
   "protectedFiles": {
     "config/dsh/web/model-router.js": "f3065ef72f9124c0770f02bb8ce188961ac329ba508a93a12090e82f41a4dd9a",
     "src/config/model-routing.ts": "3e98efc7e54fbb0cf880ae28d755a631690aebbe0155166d302d0acbecf43981",
@@ -11,9 +11,9 @@
     "scripts/paper-model-env.mjs": "541d734ee2b9adf97ccdbb2f5febbbc06f2b05af47864cb4195f379e28024e36",
     "scripts/paper-model-env.d.mts": "162665daecf4c03dfdaa2e3e721abbbf1735753a95894fceee103350ab9c8050",
     "scripts/model-credentials.mjs": "416019f3473be648494308421c1aba9a61870ae50e866d9d7b585d700e21b1d7",
-    "scripts/model-failure-policy.mjs": "4514084ec8424a38f9f5ea2ac9b699e54de8323dfba2f8376b1b619e0a4a751f",
+    "scripts/model-failure-policy.mjs": "1b88ce1aff4d2798975871acdc8d9ed5d0241ad5d8754428f4714b6d559a59f3",
     "scripts/model-failure-policy.d.mts": "3f7790cd580e987de56cd62088d29223cd219f180313261c6e830efaf1ad29b8",
-    "scripts/model-request-budget.mjs": "7f3e5584ec5eebf6e9a58b1208832f3ff9a4a87e8ad26e8388e759b09a1257ef",
+    "scripts/model-request-budget.mjs": "ffe66692c71065bc873f66e7d3215a402b0c43fb6f8cf01e8b9cd72f5d084b5b",
     "scripts/paper-context-memory.mjs": "0d9e5d352c86a749dff656025d73cf0d0e0ee355dc7856a78853f70665c3bbe8",
     "scripts/project-env.mjs": "5460289ec71552a1c115a3d0d6957425ec2e0ee5dd5af4a915f3ef73ff57612e",
     "scripts/project-env.d.mts": "8cfca5718796b6f1efed7e72163fa7c8c2c2353c2957836b6b4bffc38040f91e",
@@ -23,8 +23,8 @@
     "scripts/paper-background-runner.mjs": "cae005ab3e941415b0c1ae4d3c387672b42aa368906e9a65220f1bdd29a9c91d",
     "scripts/model-health-check.mjs": "9cf177a995b79d5a63b9ba6ca6780ea57ff2960637650b1748f1ef36a45a9eeb",
     "config/dsh/web/model-credentials.js": "f53080d646cd444e02a4c39a2c7ea905da0997096b603ca4cb6478e3ae748d7c",
-    "scripts/sync-dsh-runtime.mjs": "90106579e7f4d44988d8ab8c265b956c3a450874e57733b74341d971488be674",
-    "scripts/verify-model-routing.mjs": "9514adb855ec8349bd3035d2cb6ea53d7c2a8c67bb6050cd877cd7caa6fc7957",
+    "scripts/sync-dsh-runtime.mjs": "727cbb05a6ab4fc799e6dc134a61ad691c38607351de1fb6596dc3ac08e2b129",
+    "scripts/verify-model-routing.mjs": "b6fb9a82cf6858d9630cc7c443c03adc7fd53ce28b8a0ead624c16feb00d292e",
     "scripts/model-dependency-lock.mjs": "ac7e7a8c17b1fd9a8c00ff05fea2e150af69fc6db48dace727fbb4a7ee50e0f6",
     "scripts/guarded-model-update.mjs": "4fd997a7645cd8867e22ccbbb1c51b37270ec01a1f9c6abedf2f1975c03b7bcc",
     "scripts/model-update-idle.mjs": "6d386150859100324cb317339061f792a4ca298ad2bb51b7bd7c9c6bb4acc0b2",
@@ -37,6 +37,7 @@
     "scripts/preserve-model-layer.mjs": "d9a1f35d1489be3a04dc51afa9b1bbace5911c4f797cac6bd67c4d3fc50133d5",
     "scripts/patch-dsh-empty-tool-call.mjs": "25477120a3740c787ce6a3976147fb780e38b3b6f8b5c99f40ac1a135dbf0c31",
     "scripts/patch-dsh-protocol-alias.mjs": "a7fd2301f93de83793164e3a54df53f52be64c3207eb020cc8aee12c974cea6c",
-    "scripts/update-dsh-safe.ps1": "18c3d74d4e233304e67bcd8bb9ab39bb4874b3b968ad99ae8f961b26a6b93971"
+    "scripts/update-dsh-safe.ps1": "18c3d74d4e233304e67bcd8bb9ab39bb4874b3b968ad99ae8f961b26a6b93971",
+    "scripts/model-transport-diagnostics.mjs": "b6040d6f1588ac01928229a453d02444444c5994658ce6daacceead22c8b6832"
   }
 }

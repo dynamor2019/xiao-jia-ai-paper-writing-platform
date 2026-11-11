@@ -43,6 +43,6 @@ export function isRetryableModelFailure(error) {
     const status = Number(failure?.status ?? failure?.statusCode);
     return [408, 429, 500, 502, 503, 504].includes(status)
       || /^(?:TIMEOUT|TRANSPORT|SERVER|RATE_LIMIT|ECONNRESET|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT)$/i.test(failure?.code || '')
-      || /fetch failed|ECONNRESET|connection reset by peer|upstream stream disconnected|ETIMEDOUT|TimeoutError|\[(?:408|429|500|502|503|504)\]|\bHTTP\s+(?:408|429|500|502|503|504)\b/i.test(failureText(failure));
+      || /fetch failed|ECONNRESET|connection reset by peer|upstream stream disconnected|upstream service temporarily unavailable|ETIMEDOUT|TimeoutError|API error\s*\((?:408|429|500|502|503|504)\)|\[(?:408|429|500|502|503|504)\]|\bHTTP\s+(?:408|429|500|502|503|504)\b/i.test(failureText(failure));
   });
 }

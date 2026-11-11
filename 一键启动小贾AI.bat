@@ -38,7 +38,7 @@ if not exist "node_modules" (
 )
 
 echo 正在启动小贾AI科研论文写作平台...
-call npm run web
+call node "scripts\start-dsh-detached.mjs"
 if errorlevel 1 (
   echo.
   echo 启动失败，错误码：%errorlevel%

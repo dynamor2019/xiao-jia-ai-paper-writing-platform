@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { parse, parseDocument, stringify } from 'yaml';
 
 import { PROJECT_ROOT, resolveDataRoot } from './project-paths.mjs';
+import { repairWebFetchProvider } from './web-fetch-selection.mjs';
 import { assertSharedRuntimeCompatible } from './shared-runtime-guard.mjs';
 import { lockInstalledModelRouting, verifyModelRouting } from './verify-model-routing.mjs';
 import { initializePackagedModelBaseline } from './packaged-model-baseline.mjs';
@@ -264,6 +265,7 @@ export async function syncDshRuntime({ allowModelRoutingDrift = false } = {}) {
     if (file === 'model-router.js' && !allowModelRoutingDrift && existsSync(join(profileTarget, file))) continue;
     await copyRenderedRuntimeFile(join(profileSource, file), join(profileTarget, file), file === 'cordis.patch.yml' && !allowModelRoutingDrift);
   }
+  repairWebFetchProvider(join(profileTarget, 'cordis.patch.yml'));
   const presets = await syncAgentPresets(profileTarget);
 
   const presetSource = join(PROJECT_ROOT, 'config', 'dsh', 'presets', 'paper');

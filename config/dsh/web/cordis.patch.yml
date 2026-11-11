@@ -102,6 +102,8 @@
         baseURL: https://api-slb.rayinai.com/v1
         defaultInput: [text, image]
         models:
+          - id: claude-fable-5-2
+            name: Claude Fable 5.2
           - id: claude-sonnet-5
             name: Claude Sonnet 5
           - id: claude-opus-5-5
@@ -113,6 +115,7 @@
 - id: web
   config:
     searchProvider: openalex
+    fetchProvider: http
 
 # 启用联网工具，由 OpenAlex provider 提供可核验的论文搜索结果。
 - id: tool-web

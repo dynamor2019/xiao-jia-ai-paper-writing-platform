@@ -19,6 +19,7 @@ const PROTECTED_FILES = [
   'scripts/model-failure-policy.mjs',
   'scripts/model-failure-policy.d.mts',
   'scripts/model-request-budget.mjs',
+  'scripts/model-transport-diagnostics.mjs',
   'scripts/paper-context-memory.mjs',
   'scripts/project-env.mjs',
   'scripts/project-env.d.mts',

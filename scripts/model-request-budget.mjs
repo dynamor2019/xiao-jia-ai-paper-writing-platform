@@ -1,6 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { isAuthenticationModelFailure, isBillingModelFailure, isRetryableModelFailure } from './model-failure-policy.mjs';
 import { installPaperContextMemory } from './paper-context-memory.mjs';
+import { observeModelTransport } from './model-transport-diagnostics.mjs';
 
 const MAX_REQUEST_ATTEMPTS = 2;
 const MAX_TRANSPORT_ATTEMPTS = 3;
@@ -16,6 +17,21 @@ async function transportCooldown(milliseconds, signal) {
     if (error.name === 'AbortError') return false;
     throw error;
   }
+}
+
+/** Recognize transient gateway unavailability without changing the selected route. */
+function isGatewayUnavailable(error) {
+  const seen = new Set();
+  for (let depth = 0; error != null && depth < 8 && !seen.has(error); depth++) {
+    seen.add(error);
+    const status = Number(error.status ?? error.statusCode);
+    const message = typeof error.message === 'string' ? error.message : '';
+    if (status === 502 || /API error\s*\(502\)|\bHTTP\s+502\b|upstream service temporarily unavailable/i.test(message)) {
+      return true;
+    }
+    error = typeof error === 'object' ? error.cause : undefined;
+  }
+  return false;
 }
 
 /** Recover once through native compaction; never resend an unchanged oversized request. */
@@ -51,6 +67,7 @@ function attemptState(states, { agent, turn, step }) {
 /** Bound the whole recovery chain without changing providers' configured policies. */
 export function installModelRequestBudget(ctx, options = {}) {
   installPaperContextMemory(ctx);
+  ctx.effect(() => observeModelTransport(), 'model-transport-diagnostics');
   const states = new WeakMap();
   const wait = options.wait ?? transportCooldown;
   ctx.on('agent/request', async (event, next) => {
@@ -80,14 +97,15 @@ export function installModelRequestBudget(ctx, options = {}) {
       return recoverContextOverflow(ctx, event);
     }
     const transient = isRetryableModelFailure(event.failure);
-    const transport = transient && event.failure?.code === 'TRANSPORT';
+    const transport = transient && (event.failure?.code === 'TRANSPORT' || isGatewayUnavailable(event.failure));
     if (transport) state.maxAttempts = MAX_TRANSPORT_ATTEMPTS;
     if (event.signal?.aborted || !transient || state.count >= state.maxAttempts) {
       ctx.logger?.warn?.('Model recovery stopped: non-transient failure or retry budget exhausted');
       // Veto the downstream waterfall, including native "always" retry policies.
       return undefined;
     }
-    if (transport && !await wait(1500 * state.count, event.signal)) return undefined;
+    const cooldown = state.count === 1 ? 10000 : 30000;
+    if (transport && !await wait(cooldown, event.signal)) return undefined;
     return next();
   }, { prepend: true });
 }
